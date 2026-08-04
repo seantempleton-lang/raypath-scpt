@@ -157,6 +157,7 @@ from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 
 APP_NAME = "RayPath SCPT"
@@ -1364,9 +1365,11 @@ class RayPathMainWindow(QMainWindow):
         self.velocity_canvas = MplCanvas()
         self.ray_canvas = MplCanvas()
         self.fit_canvas = MplCanvas()
+        self.waterfall_canvas = MplCanvas()
         self.plot_tabs.addTab(self.velocity_canvas, "Velocity Profile")
         self.plot_tabs.addTab(self.ray_canvas, "Ray Paths")
         self.plot_tabs.addTab(self.fit_canvas, "Arrival-Time Fit")
+        self.plot_tabs.addTab(self.waterfall_canvas, "Waveform Waterfall")
         self.plot_tabs.addTab(self._build_vs30_tab(), "Vs30 Analysis")
         layout.addWidget(self.plot_tabs, 1)
         self._draw_empty_plots()
@@ -1609,7 +1612,109 @@ class RayPathMainWindow(QMainWindow):
                 color="#8b949e",
             )
             canvas.draw_idle()
+        self._draw_waveform_waterfall()
         self._draw_vs30_analysis()
+
+    def _draw_waveform_waterfall(self) -> None:
+        """Draw every imported left/right trace at its receiver depth."""
+
+        self.waterfall_canvas.clear()
+        self._plot_waveform_waterfall(self.waterfall_canvas.axes, dark_theme=True)
+        self.waterfall_canvas.draw_idle()
+
+    def _plot_waveform_waterfall(self, ax: Any, dark_theme: bool = False) -> None:
+        """Plot normalized paired waveforms and all six picks on one axes.
+
+        Each trace pair is centred on its receiver depth.  Normalization is
+        performed per channel so that low-amplitude intervals remain visible;
+        the relative amplitudes within each individual waveform are retained.
+        """
+
+        ax.set_title("Paired SCPT waveform waterfall")
+        ax.set_xlabel("Time after trigger (ms)")
+        ax.set_ylabel("Receiver depth (m)")
+        if not self.waveform_records:
+            ax.text(
+                0.5,
+                0.5,
+                "Import a GRU file to populate",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                color="#8b949e" if dark_theme else "#5D6D7E",
+            )
+            return
+
+        records = sorted(self.waveform_records, key=lambda item: item.depth_m)
+        depths = np.asarray([record.depth_m for record in records], dtype=float)
+        unique_depths = np.unique(depths)
+        positive_spacing = np.diff(unique_depths)
+        positive_spacing = positive_spacing[positive_spacing > 0.0]
+        spacing = float(np.median(positive_spacing)) if positive_spacing.size else 1.0
+        trace_height = max(0.12, 0.34 * spacing)
+
+        picked_times = [
+            value
+            for record in records
+            for kind in PICK_KINDS
+            for channel in (17, 18)
+            if (value := record.get_pick(kind, channel)) is not None
+        ]
+        earliest_time = min(float(record.time_ms[0]) for record in records)
+        latest_time = max(float(record.time_ms[-1]) for record in records)
+        if picked_times:
+            x_min = max(earliest_time, -10.0)
+            x_max = min(latest_time, max(25.0, max(picked_times) + 25.0))
+            if x_max <= x_min:
+                x_min, x_max = earliest_time, latest_time
+        else:
+            x_min, x_max = earliest_time, latest_time
+
+        marker_by_kind = {"first_peak": "o", "first_cross": "x", "max_peak": "^"}
+        channel_data = ((17, "#58a6ff", "Left"), (18, "#ff7b72", "Right"))
+        for record in records:
+            for channel, color, _label in channel_data:
+                values = record.left if channel == 17 else record.right
+                finite = np.asarray(values, dtype=float)
+                pre_trigger = finite[record.time_ms < 0.0]
+                baseline = float(np.median(pre_trigger)) if pre_trigger.size else float(np.median(finite))
+                centred = finite - baseline
+                scale = float(np.nanmax(np.abs(centred)))
+                normalized = centred / scale if math.isfinite(scale) and scale > 0.0 else np.zeros_like(centred)
+                plotted = record.depth_m + trace_height * normalized
+                ax.plot(record.time_ms, plotted, color=color, linewidth=0.65, alpha=0.72)
+                for kind in PICK_KINDS:
+                    pick_time = record.get_pick(kind, channel)
+                    if pick_time is None or pick_time < record.time_ms[0] or pick_time > record.time_ms[-1]:
+                        continue
+                    pick_value = float(np.interp(pick_time, record.time_ms, normalized))
+                    ax.scatter(
+                        [pick_time],
+                        [record.depth_m + trace_height * pick_value],
+                        marker=marker_by_kind[kind],
+                        s=26,
+                        color=color,
+                        linewidths=1.1,
+                        zorder=5,
+                    )
+
+        ax.axvline(0.0, color="#3fb950" if dark_theme else "#238636", linewidth=1.0, alpha=0.9)
+        ax.set_xlim(x_min, x_max)
+        depth_margin = max(trace_height * 1.5, spacing * 0.35)
+        ax.set_ylim(float(depths[-1]) + depth_margin, max(0.0, float(depths[0]) - depth_margin))
+        ax.legend(
+            handles=[
+                Line2D([0], [0], color="#58a6ff", linewidth=1.5, label="Left / channel 17"),
+                Line2D([0], [0], color="#ff7b72", linewidth=1.5, label="Right / channel 18"),
+                Line2D([0], [0], color="#8b949e", marker="o", linestyle="None", label="First peak"),
+                Line2D([0], [0], color="#8b949e", marker="x", linestyle="None", label="First cross"),
+                Line2D([0], [0], color="#8b949e", marker="^", linestyle="None", label="Maximum peak"),
+            ],
+            loc="best",
+            fontsize=8,
+            frameon=True,
+            ncol=2,
+        )
 
     def _draw_vs30_analysis(self) -> None:
         """Draw the current Vs30 result and smoothing-sensitivity history."""
@@ -2203,8 +2308,9 @@ class RayPathMainWindow(QMainWindow):
         """Build a multi-page RayPath SCPT report with charts and tables."""
 
         try:
+            from reportlab.graphics.shapes import Circle, Drawing, Line, Path as ShapePath, Rect
             from reportlab.lib import colors
-            from reportlab.lib.enums import TA_CENTER, TA_LEFT
+            from reportlab.lib.enums import TA_LEFT, TA_RIGHT
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
             from reportlab.lib.units import mm
@@ -2230,11 +2336,13 @@ class RayPathMainWindow(QMainWindow):
         selected_kind = str(self.estimator_combo.currentData())
         selected_result = self.result
         report_time = datetime.now().astimezone()
-        blue = colors.HexColor("#1F6FEB")
-        dark = colors.HexColor("#17202A")
-        mid = colors.HexColor("#5D6D7E")
-        pale = colors.HexColor("#EAF2F8")
-        grid = colors.HexColor("#CCD6DD")
+        primary = colors.HexColor("#147D75")
+        dark = colors.HexColor("#163F3B")
+        copper = colors.HexColor("#C87941")
+        mid = colors.HexColor("#5F746F")
+        pale = colors.HexColor("#E8F2EF")
+        grid = colors.HexColor("#C9D5D2")
+        soft = colors.HexColor("#F5F8F7")
         page_width, _ = A4
         content_width = page_width - 30 * mm
         chart_buffers: list[io.BytesIO] = []
@@ -2245,11 +2353,41 @@ class RayPathMainWindow(QMainWindow):
                 name="ReportTitle",
                 parent=styles["Title"],
                 fontName="Helvetica-Bold",
-                fontSize=22,
-                leading=26,
+                fontSize=18,
+                leading=22,
                 textColor=dark,
                 alignment=TA_LEFT,
-                spaceAfter=5 * mm,
+                spaceAfter=2 * mm,
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="BrandWordmark",
+                parent=styles["Normal"],
+                fontName="Helvetica-Bold",
+                fontSize=17,
+                leading=19,
+                textColor=dark,
+                spaceAfter=0.8 * mm,
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="BrandTagline",
+                parent=styles["Normal"],
+                fontSize=7.8,
+                leading=9.5,
+                textColor=mid,
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="BrandMeta",
+                parent=styles["Normal"],
+                fontSize=7.5,
+                leading=10,
+                textColor=mid,
+                alignment=TA_RIGHT,
             )
         )
         styles.add(
@@ -2269,9 +2407,10 @@ class RayPathMainWindow(QMainWindow):
                 fontName="Helvetica-Bold",
                 fontSize=13,
                 leading=16,
-                textColor=blue,
+                textColor=primary,
                 spaceBefore=4 * mm,
                 spaceAfter=2.5 * mm,
+                keepWithNext=0,
             )
         )
         styles.add(
@@ -2293,7 +2432,7 @@ class RayPathMainWindow(QMainWindow):
                 borderColor=grid,
                 borderWidth=0.5,
                 borderPadding=6,
-                backColor=colors.HexColor("#F7F9FA"),
+                backColor=soft,
             )
         )
 
@@ -2310,7 +2449,7 @@ class RayPathMainWindow(QMainWindow):
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 3.5),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7F9FA")]),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, soft]),
             ]
             if header:
                 commands.extend(
@@ -2322,17 +2461,19 @@ class RayPathMainWindow(QMainWindow):
                 )
             return TableStyle(commands)
 
-        def chart_image(draw: Any, height_mm: float = 94.0) -> Any:
-            figure = Figure(figsize=(7.3, 4.2), dpi=150, facecolor="white")
+        def chart_image(draw: Any, height_mm: float = 220.0) -> Any:
+            """Render one portrait-oriented chart sized to fill an A4 report page."""
+
+            figure = Figure(figsize=(7.2, 8.8), dpi=150, facecolor="white")
             axes = figure.add_subplot(111)
             draw(axes)
-            axes.grid(True, color="#D9E1E6", linewidth=0.6, alpha=0.8)
+            axes.grid(True, color="#D6E0DD", linewidth=0.6, alpha=0.8)
             axes.tick_params(labelsize=8)
             for spine in axes.spines.values():
-                spine.set_color("#8796A5")
+                spine.set_color("#819790")
             figure.tight_layout(pad=1.1)
             buffer = io.BytesIO()
-            figure.savefig(buffer, format="png", dpi=170, facecolor="white", bbox_inches="tight")
+            figure.savefig(buffer, format="png", dpi=170, facecolor="white")
             buffer.seek(0)
             chart_buffers.append(buffer)
             return Image(buffer, width=content_width, height=height_mm * mm)
@@ -2396,9 +2537,9 @@ class RayPathMainWindow(QMainWindow):
                     color=cmap((index + 1) / len(selected_result.ray_x_segments)),
                     linewidth=1.0,
                 )
-            ax.axvline(offset, color="#17202A", linewidth=1.5, label="Borehole")
-            ax.scatter([0.0], [0.0], marker="*", s=90, color="#E6A700", zorder=5, label="Source")
-            ax.scatter(np.full_like(selected_result.depths_m, offset), selected_result.depths_m, marker="<", s=18, color="#1F6FEB", zorder=5, label="Receivers")
+            ax.axvline(offset, color="#163F3B", linewidth=1.5, label="Borehole")
+            ax.scatter([0.0], [0.0], marker="*", s=90, color="#C87941", zorder=5, label="Source")
+            ax.scatter(np.full_like(selected_result.depths_m, offset), selected_result.depths_m, marker="<", s=18, color="#147D75", zorder=5, label="Receivers")
             ax.set_title(f"Ray paths - {PICK_LABELS.get(selected_kind, selected_kind)} model", fontsize=11, fontweight="bold")
             ax.set_xlabel("Horizontal distance (m)")
             ax.set_ylabel("Depth (m)")
@@ -2408,41 +2549,67 @@ class RayPathMainWindow(QMainWindow):
             ax.set_aspect("auto")
             ax.legend(fontsize=8, frameon=True)
 
-        def draw_vs30(ax: Any) -> None:
-            selected_weight = self._extrapolation_weight_factor()
-            plotted = False
-            for kind in PICK_KINDS:
-                history = {
-                    smoothing: value
-                    for (history_kind, smoothing, weighting), value in self.vs30_history.items()
-                    if history_kind == kind
-                    and math.isclose(weighting, selected_weight, rel_tol=0.0, abs_tol=1.0e-6)
-                }
-                if not history:
-                    continue
-                factors = sorted(history)
-                ax.plot(
-                    factors,
-                    [history[factor] for factor in factors],
-                    "-o",
-                    color=MODEL_COLORS[kind],
-                    linewidth=1.7,
-                    markersize=4,
-                    label=PICK_LABELS[kind],
+        def draw_waterfall(ax: Any) -> None:
+            self._plot_waveform_waterfall(ax, dark_theme=False)
+            ax.set_title("Paired SCPT waveform waterfall", fontsize=11, fontweight="bold")
+
+        def cone_ray_logo(size_mm: float = 18.0) -> Any:
+            """Return the Field Teal Cone & Ray mark as vector ReportLab art."""
+
+            size = size_mm * mm
+            drawing = Drawing(size, size)
+            drawing.add(
+                Rect(
+                    0.5 * mm,
+                    0.5 * mm,
+                    size - 1.0 * mm,
+                    size - 1.0 * mm,
+                    rx=3.2 * mm,
+                    ry=3.2 * mm,
+                    fillColor=pale,
+                    strokeColor=primary,
+                    strokeWidth=0.65,
                 )
-                plotted = True
-            ax.set_title(
-                f"Vs30 sensitivity - extrapolation weighting {selected_weight:.2f}",
-                fontsize=11,
-                fontweight="bold",
             )
-            ax.set_xlabel("Smoothing / regularisation factor")
-            ax.set_ylabel("Vs30 (m/s)")
-            ax.set_xlim(0.0, 1.0)
-            if plotted:
-                ax.legend(fontsize=8, frameon=True)
-            else:
-                ax.text(0.5, 0.5, "No Vs30 history available", transform=ax.transAxes, ha="center", va="center")
+            for y_mm in (5.0, 9.0, 13.0):
+                drawing.add(
+                    Line(
+                        2.3 * mm,
+                        y_mm * mm,
+                        15.8 * mm,
+                        y_mm * mm,
+                        strokeColor=colors.HexColor("#8FBDB7"),
+                        strokeWidth=0.45,
+                    )
+                )
+            drawing.add(
+                Line(15.0 * mm, 2.4 * mm, 15.0 * mm, 15.7 * mm, strokeColor=dark, strokeWidth=1.15)
+            )
+            ray_points = (
+                ((3.0, 15.0), (6.0, 13.2), (10.1, 12.6), (15.0, 13.0)),
+                ((3.0, 15.0), (5.4, 10.7), (9.7, 8.7), (15.0, 9.0)),
+                ((3.0, 15.0), (5.0, 7.0), (9.2, 4.8), (15.0, 5.0)),
+            )
+            for points in ray_points:
+                path = ShapePath()
+                path.moveTo(points[0][0] * mm, points[0][1] * mm)
+                for x_mm, y_mm in points[1:]:
+                    path.lineTo(x_mm * mm, y_mm * mm)
+                path.strokeColor = primary
+                path.strokeWidth = 0.9
+                path.fillColor = None
+                drawing.add(path)
+            drawing.add(Circle(3.0 * mm, 15.0 * mm, 1.05 * mm, fillColor=copper, strokeColor=copper))
+            for y_mm in (5.0, 9.0, 13.0):
+                receiver = ShapePath()
+                receiver.moveTo(14.0 * mm, y_mm * mm)
+                receiver.lineTo(15.0 * mm, (y_mm + 0.65) * mm)
+                receiver.lineTo(15.0 * mm, (y_mm - 0.65) * mm)
+                receiver.closePath()
+                receiver.fillColor = primary
+                receiver.strokeColor = primary
+                drawing.add(receiver)
+            return drawing
 
         doc = SimpleDocTemplate(
             str(target),
@@ -2463,15 +2630,53 @@ class RayPathMainWindow(QMainWindow):
             canvas.line(15 * mm, 12 * mm, page_width - 15 * mm, 12 * mm)
             canvas.setFont("Helvetica", 7.5)
             canvas.setFillColor(mid)
-            canvas.drawString(15 * mm, 7.5 * mm, "RayPath SCPT - Engineering interpretation report")
+            canvas.setFillColor(copper)
+            canvas.circle(16 * mm, 8.2 * mm, 1.0 * mm, fill=1, stroke=0)
+            canvas.setFillColor(mid)
+            canvas.drawString(19 * mm, 7.5 * mm, "RayPath SCPT - Engineering interpretation report")
             canvas.drawRightString(page_width - 15 * mm, 7.5 * mm, f"Page {document.page}")
             canvas.restoreState()
 
         story: list[Any] = []
-        story.append(Paragraph("RayPath SCPT", styles["ReportTitle"]))
+        project_name = self.project_path.stem if self.project_path else "Untitled"
+        brand_header = Table(
+            [
+                [
+                    cone_ray_logo(),
+                    [
+                        Paragraph('RayPath <font color="#147D75">SCPT</font>', styles["BrandWordmark"]),
+                        Paragraph("Forward ray-path shear-wave interpretation", styles["BrandTagline"]),
+                    ],
+                    Paragraph(
+                        f"<b>PROJECT</b> {escape(project_name)}<br/>{report_time.strftime('%d %b %Y').upper()}",
+                        styles["BrandMeta"],
+                    ),
+                ]
+            ],
+            colWidths=[21 * mm, 104 * mm, content_width - 125 * mm],
+        )
+        brand_header.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (0, 0), 0),
+                    ("RIGHTPADDING", (0, 0), (0, 0), 3),
+                    ("LEFTPADDING", (1, 0), (1, 0), 2),
+                    ("RIGHTPADDING", (1, 0), (1, 0), 3),
+                    ("LEFTPADDING", (2, 0), (2, 0), 3),
+                    ("RIGHTPADDING", (2, 0), (2, 0), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3 * mm),
+                    ("LINEBELOW", (0, 0), (-1, -1), 2.0, primary),
+                ]
+            )
+        )
+        story.append(brand_header)
+        story.append(Spacer(1, 5 * mm))
+        story.append(Paragraph("SCPT Engineering Interpretation Report", styles["ReportTitle"]))
         story.append(
             Paragraph(
-                "Forward ray-path shear-wave velocity inversion and Vs30 report",
+                "Forward ray-path shear-wave velocity inversion, arrival-time comparison, and Vs30 summary",
                 styles["ReportSubtitle"],
             )
         )
@@ -2549,15 +2754,26 @@ class RayPathMainWindow(QMainWindow):
             )
         )
 
-        story.append(PageBreak())
-        story.append(KeepTogether([Paragraph("Velocity profile comparison", styles["SectionHeading"]), chart_image(draw_velocity)]))
-        story.append(KeepTogether([Paragraph("Arrival-time fit comparison", styles["SectionHeading"]), chart_image(draw_fit)]))
-        story.append(PageBreak())
-        story.append(KeepTogether([Paragraph("Selected-model ray paths", styles["SectionHeading"]), chart_image(draw_rays)]))
-        story.append(KeepTogether([Paragraph("Vs30 smoothing sensitivity", styles["SectionHeading"]), chart_image(draw_vs30)]))
+        full_page_plots = (
+            ("Velocity profile comparison", draw_velocity),
+            ("Arrival-time fit comparison", draw_fit),
+            ("Selected-model ray paths", draw_rays),
+            ("Waveform waterfall and reviewed picks", draw_waterfall),
+        )
+        for heading, draw_plot in full_page_plots:
+            story.append(PageBreak())
+            story.append(
+                KeepTogether(
+                    [
+                        Paragraph(heading, styles["SectionHeading"]),
+                        chart_image(draw_plot),
+                    ]
+                )
+            )
 
         story.append(PageBreak())
         story.append(Paragraph("Receiver pick times", styles["SectionHeading"]))
+        story.append(Spacer(1, 2 * mm))
         pick_rows: list[list[Any]] = [
             ["Depth (m)", "First peak (ms)", "First cross (ms)", "Maximum peak (ms)"]
         ]
@@ -2575,6 +2791,7 @@ class RayPathMainWindow(QMainWindow):
 
         story.append(PageBreak())
         story.append(Paragraph("Layer velocity results", styles["SectionHeading"]))
+        story.append(Spacer(1, 2 * mm))
         layer_rows: list[list[Any]] = [
             [
                 "Layer",

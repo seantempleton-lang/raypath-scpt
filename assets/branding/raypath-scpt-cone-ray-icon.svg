@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">RayPath SCPT Cone and Ray icon</title>
+  <desc id="desc">A copper seismic source sends three teal refracted rays through layers to receivers in a borehole.</desc>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#E8F2EF" stroke="#147D75" stroke-width="8"/>
+  <g fill="none" stroke="#8FBDB7" stroke-width="5">
+    <path d="M34 76h188M34 128h188M34 180h188"/>
+  </g>
+  <path d="M205 34v188" fill="none" stroke="#163F3B" stroke-width="11" stroke-linecap="round"/>
+  <g fill="none" stroke="#147D75" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M45 42 84 67 142 71 205 76"/>
+    <path d="M45 42 78 104 137 123 205 128"/>
+    <path d="M45 42 73 151 131 175 205 180"/>
+  </g>
+  <circle cx="45" cy="42" r="15" fill="#C87941"/>
+  <g fill="#147D75">
+    <path d="m188 76 17-12v24z"/>
+    <path d="m188 128 17-12v24z"/>
+    <path d="m188 180 17-12v24z"/>
+  </g>
+</svg>
