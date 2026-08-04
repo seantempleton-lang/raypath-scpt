@@ -127,6 +127,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -137,10 +138,12 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QSlider,
@@ -161,24 +164,50 @@ from matplotlib.lines import Line2D
 
 
 APP_NAME = "RayPath SCPT"
+APP_VERSION = "0.3.0-alpha.1"
 PROJECT_SUFFIX = ".rpscpt"
+PROJECT_SCHEMA_VERSION = 5
+SUPPORTED_PROJECT_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5})
 GRU_PRE_TRIGGER_MS = 50.0
 VELOCITY_MIN = 50.0
 VELOCITY_MAX = 2000.0
-PICK_KINDS = ("first_peak", "first_cross", "max_peak")
-PICK_SEQUENCE = tuple((kind, channel) for kind in PICK_KINDS for channel in (17, 18))
+TRACE_PICK_KINDS = ("first_peak", "zero_cross", "max_peak")
+PAIR_PICK_KINDS = ("crossover",)
+PICK_KINDS = ("first_peak", "crossover", "zero_cross", "max_peak")
+PICK_SEQUENCE: tuple[tuple[str, int | None], ...] = (
+    ("first_peak", 17),
+    ("first_peak", 18),
+    ("crossover", None),
+    ("zero_cross", 17),
+    ("zero_cross", 18),
+    ("max_peak", 17),
+    ("max_peak", 18),
+)
 PICK_COLUMNS = {kind: index + 1 for index, kind in enumerate(PICK_KINDS)}
 PICK_LABELS = {
-    "first_peak": "First peak",
-    "first_cross": "First cross",
-    "max_peak": "Maximum peak",
+    "first_peak": "First peak/trough",
+    "crossover": "Pair crossover",
+    "zero_cross": "Individual zero crossing (experimental)",
+    "max_peak": "Maximum peak (experimental)",
 }
 MODEL_COLORS = {
     "first_peak": "#ff9b54",
-    "first_cross": "#4da3ff",
+    "crossover": "#2fb7a8",
+    "zero_cross": "#8b949e",
     "max_peak": "#d97cff",
 }
 CHANNEL_LABELS = {17: "Left", 18: "Right"}
+REVIEW_STATES = ("not_reviewed", "accepted", "accepted_with_comment", "rejected")
+REVIEW_LABELS = {
+    "not_reviewed": "Not reviewed",
+    "accepted": "Accepted",
+    "accepted_with_comment": "Accepted with comment",
+    "rejected": "Rejected - excluded from inversion",
+}
+QC_SNR_WARNING_DB = 10.0
+QC_CORRELATION_WARNING = 0.60
+QC_MAX_CORRELATION_LAG_MS = 5.0
+QC_PICK_DISAGREEMENT_WARNING_MS = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +568,9 @@ class WaveformRecord:
     right: np.ndarray
     pre_trigger_ms: float = GRU_PRE_TRIGGER_MS
     picks_ms: dict[str, float | None] = field(default_factory=dict)
+    review_state: str = "not_reviewed"
+    review_comment: str = ""
+    pick_uncertainty_ms: float | None = None
 
     @staticmethod
     def pick_key(kind: str, channel: int) -> str:
@@ -551,10 +583,80 @@ class WaveformRecord:
     def set_pick(self, kind: str, channel: int, time_ms: float | None) -> None:
         self.picks_ms[self.pick_key(kind, channel)] = None if time_ms is None else float(time_ms)
 
+    def get_pair_pick(self, kind: str) -> float | None:
+        value = self.picks_ms.get(kind)
+        return float(value) if value is not None and math.isfinite(float(value)) else None
+
+    def set_pair_pick(self, kind: str, time_ms: float | None) -> None:
+        self.picks_ms[kind] = None if time_ms is None else float(time_ms)
+
     def arrival_ms(self, kind: str) -> float | None:
+        if kind in PAIR_PICK_KINDS:
+            return self.get_pair_pick(kind)
         values = [self.get_pick(kind, channel) for channel in (17, 18)]
         finite = [value for value in values if value is not None]
         return float(np.mean(finite)) if finite else None
+
+    @property
+    def is_excluded(self) -> bool:
+        """Return whether the analyst explicitly rejected this observation."""
+
+        return self.review_state == "rejected"
+
+
+@dataclass(frozen=True)
+class WaveformQcMetrics:
+    """Deterministic signal-quality measurements for one opposing trace pair."""
+
+    sample_interval_ms: float
+    sample_interval_deviation_pct: float
+    sample_interval_consistent: bool
+    noise_rms_left: float
+    noise_rms_right: float
+    snr_left_db: float
+    snr_right_db: float
+    sign_reversed_correlation: float
+    correlation_lag_ms: float
+    polarity_reversed: bool
+    first_peak_disagreement_ms: float | None
+    zero_cross_disagreement_ms: float | None
+    max_peak_disagreement_ms: float | None
+    clipped_left: bool
+    clipped_right: bool
+    constant_left: bool
+    constant_right: bool
+    warnings: tuple[str, ...]
+
+    @property
+    def passes_minimum(self) -> bool:
+        return not self.warnings
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serialisable audit snapshot."""
+
+        def finite_or_none(value: float) -> float | None:
+            return value if math.isfinite(value) else None
+
+        return {
+            "sample_interval_ms": self.sample_interval_ms,
+            "sample_interval_deviation_pct": self.sample_interval_deviation_pct,
+            "sample_interval_consistent": self.sample_interval_consistent,
+            "noise_rms_left": finite_or_none(self.noise_rms_left),
+            "noise_rms_right": finite_or_none(self.noise_rms_right),
+            "snr_left_db": finite_or_none(self.snr_left_db),
+            "snr_right_db": finite_or_none(self.snr_right_db),
+            "sign_reversed_correlation": finite_or_none(self.sign_reversed_correlation),
+            "correlation_lag_ms": self.correlation_lag_ms,
+            "polarity_reversed": self.polarity_reversed,
+            "first_peak_disagreement_ms": self.first_peak_disagreement_ms,
+            "zero_cross_disagreement_ms": self.zero_cross_disagreement_ms,
+            "max_peak_disagreement_ms": self.max_peak_disagreement_ms,
+            "clipped_left": self.clipped_left,
+            "clipped_right": self.clipped_right,
+            "constant_left": self.constant_left,
+            "constant_right": self.constant_right,
+            "warnings": list(self.warnings),
+        }
 
 
 class GruFormatError(ValueError):
@@ -601,6 +703,14 @@ def parse_gru(path: str | Path, pre_trigger_ms: float = GRU_PRE_TRIGGER_MS) -> l
         if len(times) < 3:
             raise GruFormatError(f"Seismic test {current[0]} at {current[1]:g} m contains too few samples.")
         recorded_time = np.asarray(times, dtype=float)
+        left_array = np.asarray(left, dtype=float)
+        right_array = np.asarray(right, dtype=float)
+        if not (
+            np.all(np.isfinite(recorded_time))
+            and np.all(np.isfinite(left_array))
+            and np.all(np.isfinite(right_array))
+        ):
+            raise GruFormatError(f"Seismic test {current[0]} contains non-finite samples.")
         if not np.all(np.diff(recorded_time) > 0.0):
             raise GruFormatError(f"Seismic test {current[0]} has non-increasing sample times.")
         t = recorded_time - pre_trigger
@@ -613,9 +723,10 @@ def parse_gru(path: str | Path, pre_trigger_ms: float = GRU_PRE_TRIGGER_MS) -> l
                 test_number=current[0],
                 depth_m=current[1],
                 time_ms=t,
-                left=np.asarray(left, dtype=float),
-                right=np.asarray(right, dtype=float),
+                left=left_array,
+                right=right_array,
                 pre_trigger_ms=pre_trigger,
+                pick_uncertainty_ms=float(np.median(np.diff(recorded_time))) / 2.0,
             )
         )
         current = None
@@ -666,9 +777,9 @@ def suggest_trace_picks(time_ms: np.ndarray, values: np.ndarray) -> dict[str, fl
     y = _smoothed_trace(np.asarray(values, dtype=float))
     t = np.asarray(time_ms, dtype=float)
     pre_trigger_indices = np.flatnonzero(t < 0.0)
-    if pre_trigger_indices.size >= 3:
+    if pre_trigger_indices.size:
         baseline_indices = pre_trigger_indices
-        post_trigger_start = int(np.searchsorted(t, 0.0, side="left"))
+        post_trigger_start = min(int(np.searchsorted(t, 0.0, side="right")), t.size - 1)
     else:
         baseline_count = max(10, min(y.size // 8, int(np.searchsorted(t, min(10.0, t[-1] * 0.08)))))
         baseline_count = min(max(baseline_count, 3), y.size)
@@ -706,9 +817,56 @@ def suggest_trace_picks(time_ms: np.ndarray, values: np.ndarray) -> dict[str, fl
         cross_time = float(t[zero])
     return {
         "first_peak": float(t[first_peak]),
-        "first_cross": cross_time,
+        "zero_cross": cross_time,
         "max_peak": float(t[max_peak]),
     }
+
+
+def suggest_pair_crossover(
+    time_ms: np.ndarray,
+    left_values: np.ndarray,
+    right_values: np.ndarray,
+) -> float:
+    """Suggest the first post-arrival intersection of a reversed trace pair.
+
+    The two traces are independently baseline-corrected and amplitude-normalised
+    for the suggestion only.  Searching begins after both suggested first
+    peak/trough times, which avoids selecting a noise intersection before the
+    shear-wave arrival.  The result remains a review aid and can be moved by the
+    analyst in the picker.
+    """
+
+    t = np.asarray(time_ms, dtype=float)
+    left = _smoothed_trace(np.asarray(left_values, dtype=float))
+    right = _smoothed_trace(np.asarray(right_values, dtype=float))
+    if t.ndim != 1 or left.shape != t.shape or right.shape != t.shape or t.size < 3:
+        raise ValueError("Pair crossover requires matching one-dimensional waveform arrays.")
+
+    pre_trigger = t < 0.0
+
+    def normalized(values: np.ndarray) -> np.ndarray:
+        baseline_values = values[pre_trigger]
+        baseline = float(np.median(baseline_values)) if baseline_values.size else float(np.median(values))
+        centred = values - baseline
+        post_trigger = np.abs(centred[t >= 0.0])
+        scale = float(np.max(post_trigger)) if post_trigger.size else float(np.max(np.abs(centred)))
+        return centred / scale if math.isfinite(scale) and scale > 0.0 else centred
+
+    left_normalized = normalized(left)
+    right_normalized = normalized(right)
+    difference = left_normalized - right_normalized
+    left_suggestions = suggest_trace_picks(t, left)
+    right_suggestions = suggest_trace_picks(t, right)
+    search_time = max(left_suggestions["first_peak"], right_suggestions["first_peak"], 0.0)
+    start = min(int(np.searchsorted(t, search_time, side="left")), t.size - 2)
+    crossings = np.flatnonzero(difference[start:-1] * difference[start + 1 :] <= 0.0) + start
+    if crossings.size:
+        index = int(crossings[0])
+        delta = difference[index + 1] - difference[index]
+        fraction = 0.0 if delta == 0.0 else float(np.clip(-difference[index] / delta, 0.0, 1.0))
+        return float(t[index] + fraction * (t[index + 1] - t[index]))
+
+    return float(np.mean([left_suggestions["zero_cross"], right_suggestions["zero_cross"]]))
 
 
 def add_suggested_picks(records: Iterable[WaveformRecord], overwrite: bool = False) -> None:
@@ -720,6 +878,170 @@ def add_suggested_picks(records: Iterable[WaveformRecord], overwrite: bool = Fal
             for kind, time_ms in suggestions.items():
                 if overwrite or record.get_pick(kind, channel) is None:
                     record.set_pick(kind, channel, time_ms)
+        if overwrite or record.get_pair_pick("crossover") is None:
+            record.set_pair_pick(
+                "crossover",
+                suggest_pair_crossover(record.time_ms, record.left, record.right),
+            )
+
+
+def calculate_waveform_qc(record: WaveformRecord) -> WaveformQcMetrics:
+    """Calculate transparent, deterministic QC metrics for a trace pair.
+
+    The metrics are advisory.  They never change a pick or automatically reject
+    a record.  Rejection remains an explicit analyst decision stored in the
+    project audit data.
+    """
+
+    t = np.asarray(record.time_ms, dtype=float)
+    left = np.asarray(record.left, dtype=float)
+    right = np.asarray(record.right, dtype=float)
+    if t.ndim != 1 or t.size < 3 or left.shape != t.shape or right.shape != t.shape:
+        raise ValueError("Waveform QC requires matching one-dimensional trace arrays.")
+    if not (np.all(np.isfinite(t)) and np.all(np.isfinite(left)) and np.all(np.isfinite(right))):
+        raise ValueError("Waveform QC cannot evaluate non-finite samples.")
+
+    dt = np.diff(t)
+    if np.any(dt <= 0.0):
+        raise ValueError("Waveform QC requires strictly increasing sample times.")
+    sample_interval = float(np.median(dt))
+    interval_deviation_pct = 100.0 * float(np.max(np.abs(dt - sample_interval))) / sample_interval
+    interval_consistent = interval_deviation_pct <= 1.0
+    pre_trigger = t < 0.0
+
+    def centred(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        baseline_values = values[pre_trigger]
+        if baseline_values.size < 3:
+            baseline_values = values[: max(3, min(values.size, values.size // 8))]
+        baseline = float(np.median(baseline_values))
+        return values - baseline, baseline_values - baseline
+
+    left_centred, left_noise = centred(left)
+    right_centred, right_noise = centred(right)
+    candidate_arrivals = [
+        value
+        for kind in PICK_KINDS
+        if (value := record.arrival_ms(kind)) is not None
+    ]
+    arrival = min(candidate_arrivals) if candidate_arrivals else 0.0
+    signal_mask = (t >= max(0.0, arrival - 2.0)) & (t <= arrival + 80.0)
+    if not np.any(signal_mask):
+        signal_mask = t >= 0.0
+
+    def signal_metrics(values: np.ndarray, noise: np.ndarray) -> tuple[float, float]:
+        noise_rms = float(np.sqrt(np.mean(noise * noise))) if noise.size else 0.0
+        signal_peak = float(np.max(np.abs(values[signal_mask]))) if np.any(signal_mask) else 0.0
+        if signal_peak <= 0.0:
+            return noise_rms, float("-inf")
+        if noise_rms <= np.finfo(float).eps * max(signal_peak, 1.0):
+            return noise_rms, float("inf")
+        return noise_rms, 20.0 * math.log10(signal_peak / noise_rms)
+
+    def constant_or_clipped(values: np.ndarray) -> tuple[bool, bool]:
+        amplitude_range = float(np.ptp(values))
+        scale = max(float(np.max(np.abs(values))), 1.0)
+        is_constant = amplitude_range <= np.finfo(float).eps * scale * 32.0
+        if is_constant:
+            return True, False
+        absolute = np.abs(values - float(np.median(values[pre_trigger])))
+        extreme = absolute >= float(np.max(absolute)) * (1.0 - 1.0e-9)
+        longest_run = run = 0
+        for is_extreme in extreme:
+            run = run + 1 if is_extreme else 0
+            longest_run = max(longest_run, run)
+        return False, longest_run >= 3
+
+    constant_left, clipped_left = constant_or_clipped(left)
+    constant_right, clipped_right = constant_or_clipped(right)
+    noise_rms_left, snr_left = signal_metrics(left_centred, left_noise)
+    noise_rms_right, snr_right = signal_metrics(right_centred, right_noise)
+
+    correlation_anchor = record.get_pair_pick("crossover")
+    if correlation_anchor is None:
+        correlation_anchor = arrival
+    correlation_mask = (t >= max(0.0, correlation_anchor - 15.0)) & (t <= correlation_anchor + 40.0)
+    left_window = left_centred[correlation_mask]
+    right_window = -right_centred[correlation_mask]
+    max_lag_samples = max(1, round(QC_MAX_CORRELATION_LAG_MS / sample_interval))
+    best_correlation = -1.0
+    best_lag = 0
+    for lag in range(-max_lag_samples, max_lag_samples + 1):
+        if lag < 0:
+            a, b = left_window[-lag:], right_window[:lag]
+        elif lag > 0:
+            a, b = left_window[:-lag], right_window[lag:]
+        else:
+            a, b = left_window, right_window
+        if a.size < 3:
+            continue
+        a = a - float(np.mean(a))
+        b = b - float(np.mean(b))
+        denominator = float(np.linalg.norm(a) * np.linalg.norm(b))
+        correlation = float(np.dot(a, b) / denominator) if denominator > 0.0 else -1.0
+        if correlation > best_correlation:
+            best_correlation = correlation
+            best_lag = lag
+    best_correlation = float(np.clip(best_correlation, -1.0, 1.0))
+
+    def trace_disagreement(kind: str) -> float | None:
+        left_pick = record.get_pick(kind, 17)
+        right_pick = record.get_pick(kind, 18)
+        return None if left_pick is None or right_pick is None else abs(left_pick - right_pick)
+
+    first_peak_left = record.get_pick("first_peak", 17)
+    first_peak_right = record.get_pick("first_peak", 18)
+    if first_peak_left is not None and first_peak_right is not None:
+        left_amplitude = float(np.interp(first_peak_left, t, left_centred))
+        right_amplitude = float(np.interp(first_peak_right, t, right_centred))
+        polarity_reversed = left_amplitude * right_amplitude < 0.0
+        peak_disagreement = trace_disagreement("first_peak")
+    else:
+        polarity_reversed = False
+        peak_disagreement = None
+    zero_cross_disagreement = trace_disagreement("zero_cross")
+    max_peak_disagreement = trace_disagreement("max_peak")
+
+    warnings: list[str] = []
+    if min(snr_left, snr_right) < QC_SNR_WARNING_DB:
+        warnings.append(f"SNR below {QC_SNR_WARNING_DB:g} dB")
+    if best_correlation < QC_CORRELATION_WARNING:
+        warnings.append(f"sign-reversed correlation below {QC_CORRELATION_WARNING:.2f}")
+    if not polarity_reversed:
+        warnings.append("first peak/trough polarity is not reversed")
+    disagreement_limit = max(QC_PICK_DISAGREEMENT_WARNING_MS, 2.0 * sample_interval)
+    if peak_disagreement is not None and peak_disagreement > disagreement_limit:
+        warnings.append(f"first peak/trough disagreement exceeds {disagreement_limit:g} ms")
+    if zero_cross_disagreement is not None and zero_cross_disagreement > disagreement_limit:
+        warnings.append(f"experimental zero-cross disagreement exceeds {disagreement_limit:g} ms")
+    if max_peak_disagreement is not None and max_peak_disagreement > disagreement_limit:
+        warnings.append(f"experimental max-peak disagreement exceeds {disagreement_limit:g} ms")
+    if clipped_left or clipped_right:
+        warnings.append("possible clipping or flat-topped extreme")
+    if constant_left or constant_right:
+        warnings.append("constant or near-constant trace")
+    if not interval_consistent:
+        warnings.append("sample interval varies by more than 1%")
+
+    return WaveformQcMetrics(
+        sample_interval_ms=sample_interval,
+        sample_interval_deviation_pct=interval_deviation_pct,
+        sample_interval_consistent=interval_consistent,
+        noise_rms_left=noise_rms_left,
+        noise_rms_right=noise_rms_right,
+        snr_left_db=snr_left,
+        snr_right_db=snr_right,
+        sign_reversed_correlation=best_correlation,
+        correlation_lag_ms=best_lag * sample_interval,
+        polarity_reversed=polarity_reversed,
+        first_peak_disagreement_ms=peak_disagreement,
+        zero_cross_disagreement_ms=zero_cross_disagreement,
+        max_peak_disagreement_ms=max_peak_disagreement,
+        clipped_left=clipped_left,
+        clipped_right=clipped_right,
+        constant_left=constant_left,
+        constant_right=constant_right,
+        warnings=tuple(warnings),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -739,7 +1061,8 @@ class PasteTableWidget(QTableWidget):
             return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             for item in self.selectedItems():
-                item.setText("")
+                if item.flags() & Qt.ItemFlag.ItemIsEditable:
+                    item.setText("")
             return
         super().keyPressEvent(event)
 
@@ -760,7 +1083,11 @@ class PasteTableWidget(QTableWidget):
                 column = start_column + column_offset
                 if column >= self.columnCount():
                     break
-                self.setItem(start_row + row_offset, column, QTableWidgetItem(value))
+                row = start_row + row_offset
+                existing = self.item(row, column)
+                if existing is not None and not existing.flags() & Qt.ItemFlag.ItemIsEditable:
+                    continue
+                self.setItem(row, column, QTableWidgetItem(value))
 
     def copy_selection(self) -> None:
         ranges = self.selectedRanges()
@@ -804,15 +1131,16 @@ class MplCanvas(FigureCanvas):
 
 
 class WaveformPickerDialog(QDialog):
-    """Modal reviewer for six manual markers on every paired GRU record."""
+    """Modal reviewer for seven manual markers on every paired GRU record."""
 
     picks_changed = Signal()
 
     PICK_COLORS = {
         ("first_peak", 17): "#79c0ff",
         ("first_peak", 18): "#ffa198",
-        ("first_cross", 17): "#3b82f6",
-        ("first_cross", 18): "#f85149",
+        ("crossover", None): "#2fb7a8",
+        ("zero_cross", 17): "#3b82f6",
+        ("zero_cross", 18): "#f85149",
         ("max_peak", 17): "#1f6feb",
         ("max_peak", 18): "#da3633",
     }
@@ -822,9 +1150,10 @@ class WaveformPickerDialog(QDialog):
         self.records = records
         self.source_name = source_name
         self.active_kind = "first_peak"
-        self.active_channel = 17
-        self.marker_buttons: dict[tuple[str, int], QRadioButton] = {}
+        self.active_channel: int | None = 17
+        self.marker_buttons: dict[tuple[str, int | None], QRadioButton] = {}
         self._click_connection: int | None = None
+        self._loaded_record_index = -1
         self.setWindowTitle(f"Waveform Picker — {source_name}")
         self.setWindowFlags(
             self.windowFlags()
@@ -841,8 +1170,9 @@ class WaveformPickerDialog(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         guidance = QLabel(
-            "Guided picking order: First peak Left/blue, Right/red; First cross Left/blue, Right/red; "
-            "Maximum peak Left/blue, Right/red. Each click advances automatically. Automatic suggestions "
+            "Guided picking order: First peak/trough Left/blue, Right/red; one pair crossover; individual "
+            "zero crossing Left/blue, Right/red; Maximum peak Left/blue, Right/red. Each click advances "
+            "automatically. Individual zero crossings and maximum peaks are comparison aids. Suggestions "
             f"are review aids only. GRU times include the {GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction."
         )
         guidance.setWordWrap(True)
@@ -865,6 +1195,36 @@ class WaveformPickerDialog(QDialog):
         clear_button = QPushButton("Clear active marker")
         clear_button.clicked.connect(self._clear_active_pick)
         left_layout.addWidget(clear_button)
+
+        review_box = QGroupBox("Analyst review")
+        review_layout = QFormLayout(review_box)
+        self.review_state_combo = QComboBox()
+        for state in REVIEW_STATES:
+            self.review_state_combo.addItem(REVIEW_LABELS[state], state)
+        self.review_state_combo.setToolTip(
+            "Only Rejected observations are excluded from inversion. QC warnings are advisory and require "
+            "an analyst decision."
+        )
+        self.review_state_combo.currentIndexChanged.connect(self._review_controls_changed)
+        review_layout.addRow("State", self.review_state_combo)
+        self.uncertainty_spin = QDoubleSpinBox()
+        self.uncertainty_spin.setRange(0.0, 50.0)
+        self.uncertainty_spin.setDecimals(3)
+        self.uncertainty_spin.setSingleStep(0.1)
+        self.uncertainty_spin.setSuffix(" ms")
+        self.uncertainty_spin.setSpecialValueText("Not set")
+        self.uncertainty_spin.setToolTip(
+            "Analyst estimate of arrival-time uncertainty. The default is half one waveform sample interval. "
+            "It is recorded for audit but does not weight the current inversion."
+        )
+        self.uncertainty_spin.valueChanged.connect(self._review_controls_changed)
+        review_layout.addRow("Pick uncertainty", self.uncertainty_spin)
+        self.review_comment_edit = QPlainTextEdit()
+        self.review_comment_edit.setPlaceholderText("Reason for warning acceptance or rejection…")
+        self.review_comment_edit.setMaximumHeight(72)
+        self.review_comment_edit.textChanged.connect(self._review_controls_changed)
+        review_layout.addRow("Comment", self.review_comment_edit)
+        left_layout.addWidget(review_box)
         body.addWidget(left_panel)
 
         plot_panel = QWidget()
@@ -875,6 +1235,13 @@ class WaveformPickerDialog(QDialog):
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         navigation_row = QHBoxLayout()
         navigation_row.addWidget(self.toolbar, 1)
+        self.butterfly_checkbox = QCheckBox("Normalized butterfly overlay")
+        self.butterfly_checkbox.setChecked(True)
+        self.butterfly_checkbox.setToolTip(
+            "Overlay the sign-reversed right trace after independent baseline correction and amplitude normalisation."
+        )
+        self.butterfly_checkbox.toggled.connect(lambda: self._draw_record(preserve_view=True))
+        navigation_row.addWidget(self.butterfly_checkbox)
         self.pick_mode_button = QPushButton("Return to Pick Mode")
         self.pick_mode_button.setToolTip(
             "Turn off zoom or pan mode. The next waveform click will place the currently selected marker."
@@ -892,11 +1259,15 @@ class WaveformPickerDialog(QDialog):
         for kind in PICK_KINDS:
             kind_box = QGroupBox(PICK_LABELS[kind])
             kind_layout = QVBoxLayout(kind_box)
-            for channel in (17, 18):
-                button = QRadioButton(CHANNEL_LABELS[channel])
-                button.setStyleSheet(f"color: {'#58a6ff' if channel == 17 else '#ff7b72'};")
+            channels: tuple[int | None, ...] = (None,) if kind in PAIR_PICK_KINDS else (17, 18)
+            for channel in channels:
+                button = QRadioButton("Paired traces" if channel is None else CHANNEL_LABELS[channel])
+                if channel is None:
+                    button.setStyleSheet("color: #2fb7a8;")
+                else:
+                    button.setStyleSheet(f"color: {'#58a6ff' if channel == 17 else '#ff7b72'};")
                 button.setProperty("pick_kind", kind)
-                button.setProperty("channel", channel)
+                button.setProperty("channel", 0 if channel is None else channel)
                 button.toggled.connect(self._marker_selected)
                 self.marker_group.addButton(button)
                 self.marker_buttons[(kind, channel)] = button
@@ -910,15 +1281,55 @@ class WaveformPickerDialog(QDialog):
         self.pick_values_label.setObjectName("pickValuesLabel")
         self.pick_values_label.setWordWrap(True)
         plot_layout.addWidget(self.pick_values_label)
+        self.qc_summary_label = QLabel()
+        self.qc_summary_label.setWordWrap(True)
+        self.qc_summary_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        plot_layout.addWidget(self.qc_summary_label)
         body.addWidget(plot_panel)
         body.setSizes([260, 900])
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Use reviewed picks")
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._accept_reviewed_picks)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         self._update_active_label()
+
+    def _accept_reviewed_picks(self) -> None:
+        """Close the picker with an explicit warning for incomplete review state."""
+
+        missing_comment = [
+            index
+            for index, record in enumerate(self.records)
+            if record.review_state in ("accepted_with_comment", "rejected") and not record.review_comment
+        ]
+        if missing_comment:
+            self.record_list.setCurrentRow(missing_comment[0])
+            QMessageBox.warning(
+                self,
+                "Review comment required",
+                "Accepted with comment and Rejected observations require an analyst comment.",
+            )
+            return
+        for record in self.records:
+            if (
+                record.review_state in ("accepted", "accepted_with_comment")
+                and record.pick_uncertainty_ms is None
+            ):
+                record.pick_uncertainty_ms = float(np.median(np.diff(record.time_ms))) / 2.0
+        unreviewed = sum(record.review_state == "not_reviewed" for record in self.records)
+        if unreviewed:
+            answer = QMessageBox.question(
+                self,
+                "Unreviewed observations",
+                f"{unreviewed} waveform observation(s) remain Not reviewed. They will remain available to the "
+                "inversion but will be identified as unreviewed in the project and report. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.accept()
 
     def _populate_record_list(self) -> None:
         self.record_list.clear()
@@ -927,30 +1338,90 @@ class WaveformPickerDialog(QDialog):
 
     @staticmethod
     def _record_item_text(record: WaveformRecord) -> str:
-        complete = sum(record.get_pick(kind, channel) is not None for kind in PICK_KINDS for channel in (17, 18))
-        return f"Test {record.test_number:>3}   {record.depth_m:>6.2f} m   [{complete}/6]"
+        complete = sum(
+            (
+                record.get_pair_pick(kind) is not None
+                if channel is None
+                else record.get_pick(kind, channel) is not None
+            )
+            for kind, channel in PICK_SEQUENCE
+        )
+        try:
+            warning_count = len(calculate_waveform_qc(record).warnings)
+        except ValueError:
+            warning_count = 1
+        state_tag = {
+            "not_reviewed": "NOT REVIEWED",
+            "accepted": "ACCEPTED",
+            "accepted_with_comment": "ACCEPTED + NOTE",
+            "rejected": "REJECTED",
+        }.get(record.review_state, "NOT REVIEWED")
+        return (
+            f"Test {record.test_number:>3}   {record.depth_m:>6.2f} m   "
+            f"[{complete}/{len(PICK_SEQUENCE)}]   {state_tag}   QC {warning_count}"
+        )
 
     def _record_changed(self, row: int) -> None:
         if row >= 0:
+            self._loaded_record_index = row
+            self._load_review_controls(self.records[row])
             self._select_marker("first_peak", 17)
             self._draw_record()
+
+    def _load_review_controls(self, record: WaveformRecord) -> None:
+        """Load audit controls without treating display changes as analyst edits."""
+
+        widgets = (self.review_state_combo, self.uncertainty_spin, self.review_comment_edit)
+        for widget in widgets:
+            widget.blockSignals(True)
+        state_index = self.review_state_combo.findData(record.review_state)
+        self.review_state_combo.setCurrentIndex(max(0, state_index))
+        self.uncertainty_spin.setValue(record.pick_uncertainty_ms or 0.0)
+        self.review_comment_edit.setPlainText(record.review_comment)
+        for widget in widgets:
+            widget.blockSignals(False)
+
+    def _review_controls_changed(self, *_args: Any) -> None:
+        row = self.record_list.currentRow()
+        if row < 0 or row != self._loaded_record_index:
+            return
+        record = self.records[row]
+        record.review_state = str(self.review_state_combo.currentData())
+        record.pick_uncertainty_ms = self.uncertainty_spin.value() or None
+        if (
+            record.review_state in ("accepted", "accepted_with_comment")
+            and record.pick_uncertainty_ms is None
+        ):
+            record.pick_uncertainty_ms = float(np.median(np.diff(record.time_ms))) / 2.0
+            self.uncertainty_spin.blockSignals(True)
+            self.uncertainty_spin.setValue(record.pick_uncertainty_ms)
+            self.uncertainty_spin.blockSignals(False)
+        record.review_comment = self.review_comment_edit.toPlainText().strip()
+        self._refresh_list_item(row)
+        self._update_qc_summary(record)
+        self.picks_changed.emit()
 
     def _marker_selected(self, checked: bool) -> None:
         if not checked:
             return
         button = self.sender()
         self.active_kind = str(button.property("pick_kind"))
-        self.active_channel = int(button.property("channel"))
+        channel = int(button.property("channel"))
+        self.active_channel = None if channel == 0 else channel
         self._update_active_label()
 
     def _update_active_label(self) -> None:
         step = PICK_SEQUENCE.index((self.active_kind, self.active_channel)) + 1
+        target = (
+            "paired traces (teal)"
+            if self.active_channel is None
+            else f"{CHANNEL_LABELS[self.active_channel]} ({'blue' if self.active_channel == 17 else 'red'})"
+        )
         self.active_label.setText(
-            f"Step {step}/6 — Active: {PICK_LABELS[self.active_kind]} — "
-            f"{CHANNEL_LABELS[self.active_channel]} ({'blue' if self.active_channel == 17 else 'red'})"
+            f"Step {step}/{len(PICK_SEQUENCE)} — Active: {PICK_LABELS[self.active_kind]} — {target}"
         )
 
-    def _select_marker(self, kind: str, channel: int) -> None:
+    def _select_marker(self, kind: str, channel: int | None) -> None:
         """Select a guided marker without requiring a manual radio-button click."""
 
         button = self.marker_buttons.get((kind, channel))
@@ -980,14 +1451,19 @@ class WaveformPickerDialog(QDialog):
         positive_samples = record.time_ms[record.time_ms > 0.0]
         earliest_arrival = float(positive_samples[0]) if positive_samples.size else 0.0
         time_ms = float(np.clip(event.xdata, earliest_arrival, record.time_ms[-1]))
-        record.set_pick(self.active_kind, self.active_channel, time_ms)
+        if self.active_channel is None:
+            record.set_pair_pick(self.active_kind, time_ms)
+        else:
+            record.set_pick(self.active_kind, self.active_channel, time_ms)
+        record.review_state = "not_reviewed"
+        self._load_review_controls(record)
         self._refresh_list_item(row)
         self._draw_record(preserve_view=True)
         self.picks_changed.emit()
         self._advance_pick_workflow()
 
     def _advance_pick_workflow(self) -> None:
-        """Advance to the next marker or prompt when all six are complete."""
+        """Advance to the next marker or prompt when all seven are complete."""
 
         current = (self.active_kind, self.active_channel)
         index = PICK_SEQUENCE.index(current)
@@ -1007,28 +1483,78 @@ class WaveformPickerDialog(QDialog):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle("Receiver interval complete")
-        box.setText(f"All six picks are complete for {record.depth_m:.2f} m depth.")
-        box.setInformativeText(
-            "Save these picks and finish the profile?" if last_record
-            else "Save these picks and move to the next depth interval, or clear them and re-pick this interval?"
+        box.setText(f"All seven picks are complete for {record.depth_m:.2f} m depth.")
+        qc = calculate_waveform_qc(record)
+        qc_note = (
+            "No automatic QC warnings were raised."
+            if qc.passes_minimum
+            else "Automatic QC warnings: " + "; ".join(qc.warnings) + "."
         )
-        save_button = box.addButton(
-            "Save & Finish" if last_record else "Save & Next",
+        box.setInformativeText(
+            qc_note
+            + ("\n\nAccept these picks and finish the profile?" if last_record else
+               "\n\nAccept or reject this observation and move to the next depth interval, or re-pick it?")
+        )
+        accept_button = box.addButton(
+            "Accept & Finish" if last_record else "Accept & Next",
             QMessageBox.ButtonRole.AcceptRole,
         )
+        reject_button = box.addButton(
+            "Reject & Finish" if last_record else "Reject & Next",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
         repick_button = box.addButton("Re-pick", QMessageBox.ButtonRole.ResetRole)
-        box.setDefaultButton(save_button)
+        box.setDefaultButton(accept_button)
         box.exec()
         if box.clickedButton() is repick_button:
             for kind, channel in PICK_SEQUENCE:
-                record.set_pick(kind, channel, None)
+                if channel is None:
+                    record.set_pair_pick(kind, None)
+                else:
+                    record.set_pick(kind, channel, None)
+            record.review_state = "not_reviewed"
+            self._load_review_controls(record)
             self._refresh_list_item(row)
             self._draw_record(preserve_view=True)
             self._select_marker("first_peak", 17)
             return
-        if box.clickedButton() is save_button:
+        if box.clickedButton() is accept_button:
+            if qc.warnings and not record.review_comment:
+                comment, confirmed = QInputDialog.getMultiLineText(
+                    self,
+                    "QC comment required",
+                    "Explain why the observation is accepted despite the QC warning(s):",
+                    "",
+                )
+                if not confirmed or not comment.strip():
+                    record.review_state = "not_reviewed"
+                    self._load_review_controls(record)
+                    self._refresh_list_item(row)
+                    return
+                record.review_comment = comment.strip()
+            record.review_state = "accepted_with_comment" if record.review_comment else "accepted"
+            self._load_review_controls(record)
+            self._refresh_list_item(row)
             if last_record:
-                self.accept()
+                self._accept_reviewed_picks()
+            else:
+                self.record_list.setCurrentRow(row + 1)
+        elif box.clickedButton() is reject_button:
+            if not record.review_comment:
+                comment, confirmed = QInputDialog.getMultiLineText(
+                    self,
+                    "Rejection reason",
+                    "Record why this observation is rejected:",
+                    "; ".join(qc.warnings),
+                )
+                if not confirmed or not comment.strip():
+                    return
+                record.review_comment = comment.strip()
+            record.review_state = "rejected"
+            self._load_review_controls(record)
+            self._refresh_list_item(row)
+            if last_record:
+                self._accept_reviewed_picks()
             else:
                 self.record_list.setCurrentRow(row + 1)
 
@@ -1036,7 +1562,12 @@ class WaveformPickerDialog(QDialog):
         row = self.record_list.currentRow()
         if row < 0:
             return
-        self.records[row].set_pick(self.active_kind, self.active_channel, None)
+        if self.active_channel is None:
+            self.records[row].set_pair_pick(self.active_kind, None)
+        else:
+            self.records[row].set_pick(self.active_kind, self.active_channel, None)
+        self.records[row].review_state = "not_reviewed"
+        self._load_review_controls(self.records[row])
         self._refresh_list_item(row)
         self._draw_record(preserve_view=True)
 
@@ -1045,6 +1576,8 @@ class WaveformPickerDialog(QDialog):
         if row < 0:
             return
         add_suggested_picks([self.records[row]], overwrite=True)
+        self.records[row].review_state = "not_reviewed"
+        self._load_review_controls(self.records[row])
         self._refresh_list_item(row)
         self._draw_record(preserve_view=True)
         self._select_marker("first_peak", 17)
@@ -1071,32 +1604,111 @@ class WaveformPickerDialog(QDialog):
         ax.axhline(0.0, color="#8b949e", linewidth=0.8, alpha=0.8)
         ax.plot(record.time_ms, record.left, color="#58a6ff", linewidth=1.0, label="Left (#17)")
         ax.plot(record.time_ms, record.right, color="#ff7b72", linewidth=1.0, label="Right (#18)")
-        for kind in PICK_KINDS:
+        if self.butterfly_checkbox.isChecked():
+            pre_trigger = record.time_ms < 0.0
+            left_baseline = float(np.median(record.left[pre_trigger]))
+            right_baseline = float(np.median(record.right[pre_trigger]))
+            left_centred = record.left - left_baseline
+            right_centred = record.right - right_baseline
+            left_scale = float(np.max(np.abs(left_centred)))
+            right_scale = float(np.max(np.abs(right_centred)))
+            if left_scale > 0.0 and right_scale > 0.0:
+                butterfly = -right_centred * (left_scale / right_scale)
+                ax.plot(
+                    record.time_ms,
+                    butterfly,
+                    color="#2fb7a8",
+                    linewidth=1.1,
+                    linestyle="--",
+                    alpha=0.85,
+                    label="−Right, amplitude-normalized",
+                )
+        for kind in TRACE_PICK_KINDS:
             for channel in (17, 18):
                 pick = record.get_pick(kind, channel)
                 if pick is None:
                     continue
                 color = self.PICK_COLORS[(kind, channel)]
-                linestyle = {"first_peak": "--", "first_cross": "-", "max_peak": ":"}[kind]
+                linestyle = {"first_peak": "--", "zero_cross": "-", "max_peak": ":"}[kind]
                 ax.axvline(pick, color=color, linestyle=linestyle, linewidth=1.3, alpha=0.9)
-        ax.set_title(f"Test {record.test_number} — receiver depth {record.depth_m:.2f} m")
+        crossover = record.get_pair_pick("crossover")
+        if crossover is not None:
+            ax.axvline(
+                crossover,
+                color=self.PICK_COLORS[("crossover", None)],
+                linestyle="-.",
+                linewidth=1.8,
+                alpha=0.95,
+                label="Pair crossover",
+            )
+        ax.set_title(
+            f"Test {record.test_number} — receiver depth {record.depth_m:.2f} m — "
+            f"{REVIEW_LABELS.get(record.review_state, 'Not reviewed')}"
+        )
         ax.set_xlabel("Time relative to trigger (ms)")
         ax.set_ylabel("Recorded amplitude")
         ax.legend(loc="upper right", facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
         value_parts = []
-        for kind in PICK_KINDS:
+        for kind in TRACE_PICK_KINDS:
             left = record.get_pick(kind, 17)
             right = record.get_pick(kind, 18)
             left_text = "—" if left is None else f"{left:.2f} ms"
             right_text = "—" if right is None else f"{right:.2f} ms"
             value_parts.append(f"{PICK_LABELS[kind]}: L {left_text} · R {right_text}")
+        crossover_text = "—" if crossover is None else f"{crossover:.2f} ms"
+        value_parts.insert(1, f"{PICK_LABELS['crossover']}: {crossover_text}")
         self.pick_values_label.setText("   |   ".join(value_parts))
+        self._update_qc_summary(record)
         if previous_xlim is not None and previous_ylim is not None:
             ax.set_xlim(previous_xlim)
             ax.set_ylim(previous_ylim)
         else:
             self._apply_max_peak_zoom(record)
         self.canvas.draw_idle()
+
+    @staticmethod
+    def _metric_text(value: float, decimals: int = 1) -> str:
+        if math.isinf(value):
+            return "∞" if value > 0.0 else "−∞"
+        return f"{value:.{decimals}f}"
+
+    def _update_qc_summary(self, record: WaveformRecord) -> None:
+        """Show the current derived metrics and analyst decision together."""
+
+        try:
+            qc = calculate_waveform_qc(record)
+        except ValueError as exc:
+            self.qc_summary_label.setText(f"QC unavailable: {exc}")
+            self.qc_summary_label.setStyleSheet("font-weight: 700; color: #f85149;")
+            return
+        disagreement = (
+            "—" if qc.first_peak_disagreement_ms is None else f"{qc.first_peak_disagreement_ms:.2f} ms"
+        )
+        zero_disagreement = (
+            "—" if qc.zero_cross_disagreement_ms is None else f"{qc.zero_cross_disagreement_ms:.2f} ms"
+        )
+        max_disagreement = (
+            "—" if qc.max_peak_disagreement_ms is None else f"{qc.max_peak_disagreement_ms:.2f} ms"
+        )
+        warning_text = "None" if not qc.warnings else "; ".join(qc.warnings)
+        uncertainty = "not set" if record.pick_uncertainty_ms is None else f"{record.pick_uncertainty_ms:.3f} ms"
+        self.qc_summary_label.setText(
+            f"QC — SNR L/R: {self._metric_text(qc.snr_left_db)}/{self._metric_text(qc.snr_right_db)} dB"
+            f"   |   pre-trigger noise RMS L/R: {qc.noise_rms_left:.3g}/{qc.noise_rms_right:.3g}"
+            f"   |   sign-reversed correlation: {qc.sign_reversed_correlation:.3f} at "
+            f"{qc.correlation_lag_ms:+.2f} ms lag"
+            f"   |   L/R disagreement PT/zero/max: {disagreement}/{zero_disagreement}/{max_disagreement}"
+            f"   |   reversed polarity: {'yes' if qc.polarity_reversed else 'NO'}"
+            f"   |   sample Δt: {qc.sample_interval_ms:.3f} ms"
+            f"   |   uncertainty: {uncertainty}\nWarnings: {warning_text}"
+        )
+        if record.is_excluded:
+            color = "#f85149"
+        elif qc.warnings:
+            color = "#d29922"
+        else:
+            color = "#3fb950"
+        self.qc_summary_label.setStyleSheet(f"font-weight: 700; font-size: 12px; color: {color};")
 
     def _apply_max_peak_zoom(self, record: WaveformRecord) -> None:
         """Show a 50 ms window centered on the mean left/right maximum peak."""
@@ -1172,6 +1784,7 @@ class RayPathMainWindow(QMainWindow):
         self.project_path: Path | None = None
         self.gru_path: Path | None = None
         self.waveform_records: list[WaveformRecord] = []
+        self.observation_review: dict[float, dict[str, Any]] = {}
         self.result: InversionResult | None = None
         self.comparison_results: dict[str, InversionResult] = {}
         self.comparison_vs30: dict[str, Vs30Result | None] = {}
@@ -1286,7 +1899,10 @@ class RayPathMainWindow(QMainWindow):
         for kind in PICK_KINDS:
             self.estimator_combo.addItem(PICK_LABELS[kind], kind)
         self.estimator_combo.setCurrentIndex(1)
-        self.estimator_combo.setToolTip("Observed arrival time is the mean of the reviewed left and right markers.")
+        self.estimator_combo.setToolTip(
+            "Pair crossover uses one reviewed intersection time. Other estimators use the mean of their "
+            "reviewed left and right markers. Experimental estimators are labelled explicitly."
+        )
         self.estimator_combo.currentIndexChanged.connect(self._estimator_changed)
         form.addRow("Arrival estimator", self.estimator_combo)
         layout.addLayout(form)
@@ -1302,9 +1918,15 @@ class RayPathMainWindow(QMainWindow):
         table_label = QLabel("Receiver observations")
         table_label.setObjectName("minorTitle")
         layout.addWidget(table_label)
-        self.input_table = PasteTableWidget(0, 4)
+        self.input_table = PasteTableWidget(0, 1 + len(PICK_KINDS))
         self.input_table.setHorizontalHeaderLabels(
-            ["Depth z (m)", "First peak (ms)", "First cross (ms)", "Max peak (ms)"]
+            [
+                "Depth z (m)",
+                "First peak/trough (ms)",
+                "Pair crossover (ms)",
+                "Individual zero crossing (ms) — experimental",
+                "Max peak (ms) — experimental",
+            ]
         )
         self.input_table.setToolTip(
             f"GRU arrivals are measured from the trigger after subtracting the {GRU_PRE_TRIGGER_MS:g} ms pre-trigger period."
@@ -1389,7 +2011,9 @@ class RayPathMainWindow(QMainWindow):
         self.vs30_smoothing_label.setObjectName("accentLabel")
         metric_row.addWidget(self.vs30_smoothing_label)
         layout.addLayout(metric_row)
-        self.vs30_comparison_label = QLabel("First peak: —   |   First cross: —   |   Maximum peak: —")
+        self.vs30_comparison_label = QLabel(
+            "   |   ".join(f"{PICK_LABELS[kind]}: —" for kind in PICK_KINDS)
+        )
         self.vs30_comparison_label.setObjectName("minorTitle")
         self.vs30_comparison_label.setWordWrap(True)
         layout.addWidget(self.vs30_comparison_label)
@@ -1444,15 +2068,13 @@ class RayPathMainWindow(QMainWindow):
         self.result_summary.setWordWrap(True)
         self.result_summary.setObjectName("subtleLabel")
         layout.addWidget(self.result_summary)
-        self.result_table = QTableWidget(0, 7)
+        self.result_table = QTableWidget(0, 4 + len(PICK_KINDS))
         self.result_table.setHorizontalHeaderLabels(
             [
                 "Layer",
                 "Top depth",
                 "Bottom depth",
-                "First peak Vs",
-                "First cross Vs",
-                "Max peak Vs",
+                *[f"{PICK_LABELS[kind]} Vs" for kind in PICK_KINDS],
                 "Selected fitting error",
             ]
         )
@@ -1524,6 +2146,7 @@ class RayPathMainWindow(QMainWindow):
         """Reset the workspace to empty editable rows with no demonstration data."""
 
         self.waveform_records = []
+        self.observation_review = {}
         self.gru_path = None
         self.review_action.setEnabled(False)
         self.gru_label.setText("No GRU source loaded")
@@ -1556,7 +2179,7 @@ class RayPathMainWindow(QMainWindow):
         self.input_table.blockSignals(False)
 
     def _set_all_pick_rows(self, rows: Iterable[tuple[float, dict[str, float | None]]]) -> None:
-        """Populate all three post-trigger pick columns."""
+        """Populate every post-trigger model-pick column."""
 
         values = list(rows)
         self.input_table.blockSignals(True)
@@ -1588,7 +2211,9 @@ class RayPathMainWindow(QMainWindow):
         self.result_summary.setText("Run the inversion to calculate a layered Vs profile.")
         self.rmse_label.setText("RMSE: — ms")
         self.vs30_status_label.setText("Vs30: — m/s")
-        self.vs30_comparison_label.setText("First peak: —   |   First cross: —   |   Maximum peak: —")
+        self.vs30_comparison_label.setText(
+            "   |   ".join(f"{PICK_LABELS[kind]}: —" for kind in PICK_KINDS)
+        )
         self._draw_empty_plots()
 
     def _draw_empty_plots(self) -> None:
@@ -1623,7 +2248,7 @@ class RayPathMainWindow(QMainWindow):
         self.waterfall_canvas.draw_idle()
 
     def _plot_waveform_waterfall(self, ax: Any, dark_theme: bool = False) -> None:
-        """Plot normalized paired waveforms and all six picks on one axes.
+        """Plot normalized paired waveforms and all seven picks on one axes.
 
         Each trace pair is centred on its receiver depth.  Normalization is
         performed per channel so that low-amplitude intervals remain visible;
@@ -1656,10 +2281,15 @@ class RayPathMainWindow(QMainWindow):
         picked_times = [
             value
             for record in records
-            for kind in PICK_KINDS
+            for kind in TRACE_PICK_KINDS
             for channel in (17, 18)
             if (value := record.get_pick(kind, channel)) is not None
         ]
+        picked_times.extend(
+            value
+            for record in records
+            if (value := record.get_pair_pick("crossover")) is not None
+        )
         earliest_time = min(float(record.time_ms[0]) for record in records)
         latest_time = max(float(record.time_ms[-1]) for record in records)
         if picked_times:
@@ -1670,9 +2300,17 @@ class RayPathMainWindow(QMainWindow):
         else:
             x_min, x_max = earliest_time, latest_time
 
-        marker_by_kind = {"first_peak": "o", "first_cross": "x", "max_peak": "^"}
+        marker_by_kind = {"first_peak": "o", "zero_cross": "x", "max_peak": "^"}
         channel_data = ((17, "#58a6ff", "Left"), (18, "#ff7b72", "Right"))
         for record in records:
+            if record.is_excluded:
+                ax.axhspan(
+                    record.depth_m - 0.48 * spacing,
+                    record.depth_m + 0.48 * spacing,
+                    color="#f85149",
+                    alpha=0.10,
+                    zorder=0,
+                )
             for channel, color, _label in channel_data:
                 values = record.left if channel == 17 else record.right
                 finite = np.asarray(values, dtype=float)
@@ -1683,7 +2321,7 @@ class RayPathMainWindow(QMainWindow):
                 normalized = centred / scale if math.isfinite(scale) and scale > 0.0 else np.zeros_like(centred)
                 plotted = record.depth_m + trace_height * normalized
                 ax.plot(record.time_ms, plotted, color=color, linewidth=0.65, alpha=0.72)
-                for kind in PICK_KINDS:
+                for kind in TRACE_PICK_KINDS:
                     pick_time = record.get_pick(kind, channel)
                     if pick_time is None or pick_time < record.time_ms[0] or pick_time > record.time_ms[-1]:
                         continue
@@ -1697,6 +2335,18 @@ class RayPathMainWindow(QMainWindow):
                         linewidths=1.1,
                         zorder=5,
                     )
+            crossover = record.get_pair_pick("crossover")
+            if crossover is not None and record.time_ms[0] <= crossover <= record.time_ms[-1]:
+                ax.scatter(
+                    [crossover],
+                    [record.depth_m],
+                    marker="D",
+                    s=30,
+                    facecolors="#2fb7a8",
+                    edgecolors="#163f3b" if not dark_theme else "#9ce5dc",
+                    linewidths=0.9,
+                    zorder=6,
+                )
 
         ax.axvline(0.0, color="#3fb950" if dark_theme else "#238636", linewidth=1.0, alpha=0.9)
         ax.set_xlim(x_min, x_max)
@@ -1706,9 +2356,11 @@ class RayPathMainWindow(QMainWindow):
             handles=[
                 Line2D([0], [0], color="#58a6ff", linewidth=1.5, label="Left / channel 17"),
                 Line2D([0], [0], color="#ff7b72", linewidth=1.5, label="Right / channel 18"),
-                Line2D([0], [0], color="#8b949e", marker="o", linestyle="None", label="First peak"),
-                Line2D([0], [0], color="#8b949e", marker="x", linestyle="None", label="First cross"),
+                Line2D([0], [0], color="#8b949e", marker="o", linestyle="None", label="First peak/trough"),
+                Line2D([0], [0], color="#2fb7a8", marker="D", linestyle="None", label="Pair crossover"),
+                Line2D([0], [0], color="#8b949e", marker="x", linestyle="None", label="Individual zero crossing"),
                 Line2D([0], [0], color="#8b949e", marker="^", linestyle="None", label="Maximum peak"),
+                Line2D([0], [0], color="#f85149", linewidth=7, alpha=0.25, label="Rejected / excluded"),
             ],
             loc="best",
             fontsize=8,
@@ -1865,10 +2517,26 @@ class RayPathMainWindow(QMainWindow):
         return depths, times_s
 
     def _read_all_pick_rows(self) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-        """Read rows having valid positive values in all three pick columns."""
+        """Read comparable models on the active estimator's receiver depths.
 
-        complete: list[tuple[float, dict[str, float]]] = []
+        A pick model is included only when it is present at every depth used by
+        the active estimator.  This lets schema-1-to-3 projects remain usable
+        after migration: their individual zero crossings are preserved, while
+        the newly introduced pair crossover stays blank until waveform review.
+        """
+
+        parsed: list[tuple[float, dict[str, float | None]]] = []
         invalid_rows: list[str] = []
+        rejected_depths = {
+            round(record.depth_m, 6)
+            for record in self.waveform_records
+            if record.is_excluded
+        }
+        rejected_depths.update(
+            depth
+            for depth, metadata in self.observation_review.items()
+            if metadata.get("review_state") == "rejected"
+        )
         for row in range(self.input_table.rowCount()):
             depth_text = self.input_table.item(row, 0).text().strip() if self.input_table.item(row, 0) else ""
             pick_texts = {
@@ -1881,29 +2549,43 @@ class RayPathMainWindow(QMainWindow):
             }
             if not depth_text and not any(pick_texts.values()):
                 continue
-            if not depth_text or not all(pick_texts.values()):
+            if not depth_text:
+                invalid_rows.append(str(row + 1))
                 continue
             try:
                 depth = float(depth_text)
-                picks = {kind: float(text) for kind, text in pick_texts.items()}
+                if round(depth, 6) in rejected_depths:
+                    continue
+                picks = {
+                    kind: (float(text) if text else None)
+                    for kind, text in pick_texts.items()
+                }
                 if depth <= 0.0 or not math.isfinite(depth):
                     raise ValueError
-                if any(value <= 0.0 or not math.isfinite(value) for value in picks.values()):
+                if any(
+                    value is not None and (value <= 0.0 or not math.isfinite(value))
+                    for value in picks.values()
+                ):
                     raise ValueError
-                complete.append((depth, picks))
+                parsed.append((depth, picks))
             except ValueError:
                 invalid_rows.append(str(row + 1))
         if invalid_rows:
             raise ValueError(f"Rows {', '.join(invalid_rows)} contain invalid pick values.")
+        selected_kind = str(self.estimator_combo.currentData())
+        complete = [item for item in parsed if item[1].get(selected_kind) is not None]
         if len(complete) < 2:
-            raise ValueError("At least two rows require depth and all three positive pick times for comparison.")
+            raise ValueError(
+                f"At least two rows require depth and a positive {PICK_LABELS[selected_kind]} time."
+            )
         complete.sort(key=lambda item: item[0])
         depths = np.asarray([depth for depth, _ in complete], dtype=float)
         if np.any(np.diff(depths) <= 0.0):
             raise ValueError("Receiver depths must be unique and strictly increasing.")
         times = {
-            kind: np.asarray([picks[kind] / 1000.0 for _, picks in complete], dtype=float)
+            kind: np.asarray([float(picks[kind]) / 1000.0 for _, picks in complete], dtype=float)
             for kind in PICK_KINDS
+            if all(picks[kind] is not None for _, picks in complete)
         }
         return depths, times
 
@@ -1971,26 +2653,154 @@ class RayPathMainWindow(QMainWindow):
         )
         self._populate_table_from_picks()
         self._clear_results()
+        rejected = sum(record.is_excluded for record in records)
+        unreviewed = sum(record.review_state == "not_reviewed" for record in records)
         self.status_label.setText(
-            f"Imported {len(records)} GRU seismic records — {GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction applied"
+            f"Imported {len(records)} GRU records — {rejected} rejected/excluded, {unreviewed} not reviewed — "
+            f"{GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction applied"
         )
         self._set_dirty(True)
 
     def _populate_table_from_picks(self) -> None:
+        self.observation_review = {
+            round(record.depth_m, 6): {
+                "review_state": record.review_state,
+                "review_comment": record.review_comment,
+                "pick_uncertainty_ms": record.pick_uncertainty_ms,
+            }
+            for record in self.waveform_records
+        }
         rows = [
             (record.depth_m, {kind: record.arrival_ms(kind) for kind in PICK_KINDS})
             for record in self.waveform_records
         ]
         self._set_all_pick_rows(rows)
+        self._apply_waveform_review_to_input_table()
         missing = sum(value is None for _, picks in rows for value in picks.values())
+        rejected = sum(record.is_excluded for record in self.waveform_records)
+        _accepted, _rejected, unreviewed = self._review_counts()
+        status_parts = []
         if missing:
-            self.status_label.setText(f"{missing} pick values are missing and need waveform review")
+            status_parts.append(f"{missing} pick values missing")
+        if rejected:
+            status_parts.append(f"{rejected} rejected and excluded")
+        if unreviewed:
+            status_parts.append(f"{unreviewed} not reviewed")
+        if self.gru_path:
+            accepted = sum(
+                record.review_state in ("accepted", "accepted_with_comment")
+                for record in self.waveform_records
+            )
+            self.gru_label.setText(
+                f"{self.gru_path.name} — {len(self.waveform_records)} paired records — "
+                f"{accepted} accepted, {rejected} rejected, {unreviewed} not reviewed — "
+                f"{GRU_PRE_TRIGGER_MS:g} ms pre-trigger corrected"
+            )
+        if status_parts:
+            self.status_label.setText("Waveform review: " + "; ".join(status_parts))
+
+    def _review_counts(self) -> tuple[int, int, int]:
+        """Return accepted, rejected, and not-reviewed observation counts."""
+
+        states = (
+            [record.review_state for record in self.waveform_records]
+            if self.waveform_records
+            else [str(item.get("review_state", "not_reviewed")) for item in self.observation_review.values()]
+        )
+        accepted = sum(state in ("accepted", "accepted_with_comment") for state in states)
+        rejected = sum(state == "rejected" for state in states)
+        unreviewed = sum(state == "not_reviewed" for state in states)
+        return accepted, rejected, unreviewed
+
+    def _apply_waveform_review_to_input_table(self) -> None:
+        """Make inclusion state visible without adding editable data columns."""
+
+        for row, record in enumerate(self.waveform_records):
+            if row >= self.input_table.rowCount():
+                break
+            try:
+                qc = calculate_waveform_qc(record)
+                warnings = "; ".join(qc.warnings) if qc.warnings else "No automatic QC warnings"
+            except ValueError as exc:
+                warnings = f"QC unavailable: {exc}"
+            tooltip = (
+                f"Review state: {REVIEW_LABELS.get(record.review_state, record.review_state)}\n"
+                f"Pick uncertainty: "
+                f"{'not set' if record.pick_uncertainty_ms is None else f'{record.pick_uncertainty_ms:.3f} ms'}\n"
+                f"{warnings}"
+            )
+            tooltip += "\nUse Review Waveforms to change waveform-backed picks or review state."
+            if record.review_comment:
+                tooltip += f"\nComment: {record.review_comment}"
+            background = {
+                "rejected": QColor("#4a2027"),
+                "not_reviewed": QColor("#3d321b"),
+                "accepted_with_comment": QColor("#173d39"),
+                "accepted": QColor("#17351f"),
+            }.get(record.review_state, QColor("#21262d"))
+            for column in range(self.input_table.columnCount()):
+                item = self.input_table.item(row, column)
+                if item is None:
+                    item = QTableWidgetItem("")
+                    self.input_table.setItem(row, column, item)
+                item.setToolTip(tooltip)
+                item.setBackground(background)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                font = item.font()
+                font.setStrikeOut(record.is_excluded)
+                item.setFont(font)
+
+    def _apply_saved_review_to_input_table(self) -> None:
+        """Show saved exclusions even when the referenced raw GRU is unavailable."""
+
+        for row in range(self.input_table.rowCount()):
+            depth_item = self.input_table.item(row, 0)
+            if depth_item is None:
+                continue
+            try:
+                metadata = self.observation_review.get(round(float(depth_item.text()), 6))
+            except ValueError:
+                continue
+            if not metadata:
+                continue
+            state = str(metadata.get("review_state", "not_reviewed"))
+            comment = str(metadata.get("review_comment", ""))
+            uncertainty = metadata.get("pick_uncertainty_ms")
+            tooltip = (
+                f"Saved review state: {REVIEW_LABELS.get(state, state)}\n"
+                f"Pick uncertainty: {'not set' if uncertainty is None else f'{float(uncertainty):.3f} ms'}"
+            )
+            if comment:
+                tooltip += f"\nComment: {comment}"
+            background = {
+                "rejected": QColor("#4a2027"),
+                "not_reviewed": QColor("#3d321b"),
+                "accepted_with_comment": QColor("#173d39"),
+                "accepted": QColor("#17351f"),
+            }.get(state, QColor("#21262d"))
+            for column in range(self.input_table.columnCount()):
+                item = self.input_table.item(row, column)
+                if item is None:
+                    continue
+                item.setToolTip(tooltip)
+                item.setBackground(background)
+                font = item.font()
+                font.setStrikeOut(state == "rejected")
+                item.setFont(font)
 
     @Slot()
     def review_waveforms(self) -> None:
         if not self.waveform_records:
             return
-        backup = [record.picks_ms.copy() for record in self.waveform_records]
+        backup = [
+            (
+                record.picks_ms.copy(),
+                record.review_state,
+                record.review_comment,
+                record.pick_uncertainty_ms,
+            )
+            for record in self.waveform_records
+        ]
         dialog = WaveformPickerDialog(
             self.waveform_records,
             self.gru_path.name if self.gru_path else "project waveforms",
@@ -2001,8 +2811,11 @@ class RayPathMainWindow(QMainWindow):
             self._clear_results()
             self._set_dirty(True)
         else:
-            for record, picks in zip(self.waveform_records, backup):
+            for record, (picks, state, comment, uncertainty) in zip(self.waveform_records, backup):
                 record.picks_ms = picks
+                record.review_state = state
+                record.review_comment = comment
+                record.pick_uncertainty_ms = uncertainty
 
     def _load_observation_csv(self, path: Path) -> None:
         rows: list[tuple[float, dict[str, float | None]]] = []
@@ -2017,8 +2830,13 @@ class RayPathMainWindow(QMainWindow):
                 try:
                     depth = float(values[0])
                     picks: dict[str, float | None] = {kind: None for kind in PICK_KINDS}
-                    if len(values) >= 4:
-                        for kind, value in zip(PICK_KINDS, values[1:4]):
+                    if len(values) >= 5:
+                        for kind, value in zip(PICK_KINDS, values[1:5]):
+                            picks[kind] = float(value) if value.strip() else None
+                    elif len(values) >= 4:
+                        # Pre-schema-4 observation grids contained peak,
+                        # individual zero crossing, and maximum peak.
+                        for kind, value in zip(("first_peak", "zero_cross", "max_peak"), values[1:4]):
                             picks[kind] = float(value) if value.strip() else None
                     else:
                         picks[selected_kind] = float(values[1])
@@ -2031,6 +2849,7 @@ class RayPathMainWindow(QMainWindow):
             raise ValueError("CSV must contain at least two depth/arrival-time rows.")
         rows.sort(key=lambda item: item[0])
         self.waveform_records = []
+        self.observation_review = {}
         self.gru_path = None
         self.project_path = None
         self.review_action.setEnabled(False)
@@ -2041,19 +2860,46 @@ class RayPathMainWindow(QMainWindow):
         self._set_dirty(True)
 
     def _project_payload(self) -> dict[str, Any]:
+        if self.waveform_records:
+            self.observation_review = {
+                round(record.depth_m, 6): {
+                    "review_state": record.review_state,
+                    "review_comment": record.review_comment,
+                    "pick_uncertainty_ms": record.pick_uncertainty_ms,
+                }
+                for record in self.waveform_records
+            }
         inputs = []
         for row in range(self.input_table.rowCount()):
             depth = self.input_table.item(row, 0).text() if self.input_table.item(row, 0) else ""
             item: dict[str, str] = {"depth_m": depth}
             for kind, column in PICK_COLUMNS.items():
                 item[f"{kind}_ms"] = self.input_table.item(row, column).text() if self.input_table.item(row, column) else ""
+            try:
+                review = self.observation_review.get(round(float(depth), 6)) if depth else None
+            except ValueError:
+                review = None
+            if review:
+                item.update(review)
             inputs.append(item)
         payload: dict[str, Any] = {
             "format": "RayPath SCPT Project",
-            "version": 3,
+            # ``version`` is retained for compatibility with existing project
+            # files.  New readers should prefer the explicitly named fields.
+            "version": PROJECT_SCHEMA_VERSION,
+            "schema_version": PROJECT_SCHEMA_VERSION,
+            "application_version": APP_VERSION,
             "units": "SI",
             "gru_pre_trigger_ms": GRU_PRE_TRIGGER_MS,
             "pick_time_reference": "relative_to_trigger",
+            "qc_configuration": {
+                "method_version": 1,
+                "snr_warning_db": QC_SNR_WARNING_DB,
+                "sign_reversed_correlation_warning": QC_CORRELATION_WARNING,
+                "maximum_correlation_lag_ms": QC_MAX_CORRELATION_LAG_MS,
+                "peak_disagreement_warning_ms": QC_PICK_DISAGREEMENT_WARNING_MS,
+                "sample_interval_deviation_warning_pct": 1.0,
+            },
             "source_offset_m": self.offset_spin.value(),
             "regularization": self.reg_slider.value() / 100.0,
             "vs30_extrapolation_weight_factor": self._extrapolation_weight_factor(),
@@ -2074,6 +2920,10 @@ class RayPathMainWindow(QMainWindow):
                     "test_number": record.test_number,
                     "depth_m": record.depth_m,
                     "picks_ms": record.picks_ms,
+                    "review_state": record.review_state,
+                    "review_comment": record.review_comment,
+                    "pick_uncertainty_ms": record.pick_uncertainty_ms,
+                    "qc_metrics": calculate_waveform_qc(record).to_dict(),
                 }
                 for record in self.waveform_records
             ],
@@ -2095,7 +2945,10 @@ class RayPathMainWindow(QMainWindow):
         if self.project_path is None:
             return self.save_project_as()
         try:
-            self.project_path.write_text(json.dumps(self._project_payload(), indent=2), encoding="utf-8")
+            self.project_path.write_text(
+                json.dumps(self._project_payload(), indent=2, allow_nan=False),
+                encoding="utf-8",
+            )
             self._set_dirty(False)
             self.status_label.setText(f"Saved {self.project_path.name}")
             return True
@@ -2116,8 +2969,11 @@ class RayPathMainWindow(QMainWindow):
 
     def _load_project(self, path: Path) -> None:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        project_version = int(payload.get("version", 0))
-        if payload.get("format") != "RayPath SCPT Project" or project_version not in (1, 2, 3):
+        project_version = int(payload.get("schema_version", payload.get("version", 0)))
+        if (
+            payload.get("format") != "RayPath SCPT Project"
+            or project_version not in SUPPORTED_PROJECT_SCHEMA_VERSIONS
+        ):
             raise ValueError("This is not a supported RayPath SCPT project file.")
         self.project_path = path
         self.offset_spin.setValue(float(payload.get("source_offset_m", 2.4)))
@@ -2125,12 +2981,30 @@ class RayPathMainWindow(QMainWindow):
         saved_weight = float(payload.get("vs30_extrapolation_weight_factor", 1.0))
         saved_weight = float(np.clip(saved_weight, 0.25, 4.0))
         self.extrapolation_weight_slider.setValue(round(100.0 * math.log(saved_weight, 4.0)))
-        estimator = str(payload.get("arrival_estimator", "first_cross"))
+        default_estimator = "crossover" if project_version >= 4 else "first_cross"
+        estimator = str(payload.get("arrival_estimator", default_estimator))
+        if project_version < 4 and estimator == "first_cross":
+            estimator = "zero_cross"
         estimator_index = self.estimator_combo.findData(estimator)
         self.estimator_combo.setCurrentIndex(max(0, estimator_index))
 
         inputs = payload.get("inputs", [])
-        if project_version >= 3:
+        self.observation_review = {}
+        if project_version >= 5:
+            for item in inputs:
+                if not item.get("depth_m") or not item.get("review_state"):
+                    continue
+                state = str(item.get("review_state"))
+                if state not in REVIEW_STATES:
+                    state = "not_reviewed"
+                raw_uncertainty = item.get("pick_uncertainty_ms")
+                uncertainty = float(raw_uncertainty) if raw_uncertainty not in (None, "") else None
+                self.observation_review[round(float(item["depth_m"]), 6)] = {
+                    "review_state": state,
+                    "review_comment": str(item.get("review_comment", "")).strip(),
+                    "pick_uncertainty_ms": uncertainty if uncertainty is not None and uncertainty > 0.0 else None,
+                }
+        if project_version >= 4:
             rows_all = [
                 (
                     float(item["depth_m"]),
@@ -2143,13 +3017,29 @@ class RayPathMainWindow(QMainWindow):
                 if item.get("depth_m")
             ]
             self._set_all_pick_rows(rows_all)
+        elif project_version >= 3:
+            rows_all = [
+                (
+                    float(item["depth_m"]),
+                    {
+                        "first_peak": float(item["first_peak_ms"]) if item.get("first_peak_ms") else None,
+                        "crossover": None,
+                        "zero_cross": float(item["first_cross_ms"]) if item.get("first_cross_ms") else None,
+                        "max_peak": float(item["max_peak_ms"]) if item.get("max_peak_ms") else None,
+                    },
+                )
+                for item in inputs
+                if item.get("depth_m")
+            ]
+            self._set_all_pick_rows(rows_all)
         else:
             rows = [
                 (float(item["depth_m"]), float(item["arrival_time_ms"]))
                 for item in inputs
                 if item.get("depth_m") and item.get("arrival_time_ms")
             ]
-            self._set_input_rows(rows, str(payload.get("arrival_estimator", "first_cross")))
+            legacy_kind = str(payload.get("arrival_estimator", "first_cross"))
+            self._set_input_rows(rows, "zero_cross" if legacy_kind == "first_cross" else legacy_kind)
         self.waveform_records = []
         self.gru_path = Path(payload["gru_source"]) if payload.get("gru_source") else None
         if self.gru_path and self.gru_path.is_file():
@@ -2158,9 +3048,13 @@ class RayPathMainWindow(QMainWindow):
                 self.waveform_records = parse_gru(self.gru_path)
             finally:
                 QApplication.restoreOverrideCursor()
-            saved = {(int(item["test_number"]), float(item["depth_m"])): item.get("picks_ms", {}) for item in payload.get("picks", [])}
+            saved = {
+                (int(item["test_number"]), float(item["depth_m"])): item
+                for item in payload.get("picks", [])
+            }
             for record in self.waveform_records:
-                loaded_picks = dict(saved.get((record.test_number, record.depth_m), {}))
+                saved_record = saved.get((record.test_number, record.depth_m), {})
+                loaded_picks = dict(saved_record.get("picks_ms", {}))
                 if project_version == 1:
                     # Version 1 stored raw GRU record times and did not account
                     # for the undocumented pre-trigger period.
@@ -2168,22 +3062,58 @@ class RayPathMainWindow(QMainWindow):
                         key: (None if value is None else float(value) - GRU_PRE_TRIGGER_MS)
                         for key, value in loaded_picks.items()
                     }
+                if project_version < 4:
+                    for channel in (17, 18):
+                        legacy_key = record.pick_key("first_cross", channel)
+                        zero_key = record.pick_key("zero_cross", channel)
+                        if legacy_key in loaded_picks and zero_key not in loaded_picks:
+                            loaded_picks[zero_key] = loaded_picks.pop(legacy_key)
                 record.picks_ms = loaded_picks
+                input_review = self.observation_review.get(round(record.depth_m, 6), {})
+                review_state = str(saved_record.get("review_state", input_review.get("review_state", "not_reviewed")))
+                record.review_state = review_state if review_state in REVIEW_STATES else "not_reviewed"
+                record.review_comment = str(
+                    saved_record.get("review_comment", input_review.get("review_comment", ""))
+                ).strip()
+                saved_uncertainty = saved_record.get(
+                    "pick_uncertainty_ms",
+                    input_review.get("pick_uncertainty_ms"),
+                )
+                if saved_uncertainty is not None:
+                    uncertainty = float(saved_uncertainty)
+                    record.pick_uncertainty_ms = uncertainty if uncertainty > 0.0 else None
             self.gru_label.setText(
                 f"{self.gru_path.name} — {len(self.waveform_records)} paired seismic records — "
                 f"{GRU_PRE_TRIGGER_MS:g} ms pre-trigger corrected"
             )
-            if project_version < 3:
+            if project_version < 4:
                 self._populate_table_from_picks()
+            else:
+                self.observation_review = {
+                    round(record.depth_m, 6): {
+                        "review_state": record.review_state,
+                        "review_comment": record.review_comment,
+                        "pick_uncertainty_ms": record.pick_uncertainty_ms,
+                    }
+                    for record in self.waveform_records
+                }
+                self._apply_waveform_review_to_input_table()
         elif self.gru_path:
             self.gru_label.setText(f"GRU source unavailable: {self.gru_path}")
+            self._apply_saved_review_to_input_table()
         else:
             self.gru_label.setText("Project contains manually entered observations")
+            self._apply_saved_review_to_input_table()
         self.review_action.setEnabled(bool(self.waveform_records))
         self._clear_results()
         self.vs30_history = {
             (
-                str(item.get("pick_kind", payload.get("arrival_estimator", "first_cross"))),
+                (
+                    "zero_cross"
+                    if project_version < 4
+                    and str(item.get("pick_kind", payload.get("arrival_estimator", "first_cross"))) == "first_cross"
+                    else str(item.get("pick_kind", payload.get("arrival_estimator", "crossover")))
+                ),
                 float(item["regularization"]),
                 round(float(item.get("weight_factor", 1.0)), 6),
             ): float(item["vs30_mps"])
@@ -2191,7 +3121,13 @@ class RayPathMainWindow(QMainWindow):
             if "regularization" in item and "vs30_mps" in item
         }
         self._draw_vs30_analysis()
-        self.status_label.setText(f"Opened {path.name}")
+        if self.observation_review:
+            _accepted, rejected, unreviewed = self._review_counts()
+            self.status_label.setText(
+                f"Opened {path.name} — {rejected} rejected/excluded, {unreviewed} not reviewed"
+            )
+        else:
+            self.status_label.setText(f"Opened {path.name}")
         self._set_dirty(False)
 
     @Slot()
@@ -2214,20 +3150,18 @@ class RayPathMainWindow(QMainWindow):
                         "Layer",
                         "Top Depth (m)",
                         "Bottom Depth (m)",
-                        "First Peak Vs (m/s)",
-                        "First Cross Vs (m/s)",
-                        "Maximum Peak Vs (m/s)",
+                        *[f"{PICK_LABELS[kind]} Vs (m/s)" for kind in PICK_KINDS],
                         "Observed Post-Trigger Travel Time (ms)",
                         "Calculated Post-Trigger Travel Time (ms)",
                         "Fitting Error (ms)",
                         "Ray Parameter (s/m)",
                         "Regularization Factor",
-                        "First Peak Vs30 (m/s)",
-                        "First Cross Vs30 (m/s)",
-                        "Maximum Peak Vs30 (m/s)",
+                        *[f"{PICK_LABELS[kind]} Vs30 (m/s)" for kind in PICK_KINDS],
                         "Vs30 Extrapolation Weight Factor",
                         "Vs30 Extrapolated Thickness (m)",
                         "Vs30 Extrapolated Velocity (m/s)",
+                        "Application Version",
+                        "Project Schema Version",
                     ]
                 )
                 tops = np.r_[0.0, self.result.depths_m[:-1]]
@@ -2237,35 +3171,23 @@ class RayPathMainWindow(QMainWindow):
                             i + 1,
                             f"{tops[i]:.4f}",
                             f"{self.result.depths_m[i]:.4f}",
-                            (
-                                "" if "first_peak" not in self.comparison_results
-                                else f"{self.comparison_results['first_peak'].velocities_mps[i]:.3f}"
-                            ),
-                            (
-                                "" if "first_cross" not in self.comparison_results
-                                else f"{self.comparison_results['first_cross'].velocities_mps[i]:.3f}"
-                            ),
-                            (
-                                "" if "max_peak" not in self.comparison_results
-                                else f"{self.comparison_results['max_peak'].velocities_mps[i]:.3f}"
-                            ),
+                            *[
+                                ""
+                                if kind not in self.comparison_results
+                                else f"{self.comparison_results[kind].velocities_mps[i]:.3f}"
+                                for kind in PICK_KINDS
+                            ],
                             f"{self.result.observed_times_s[i] * 1000.0:.4f}",
                             f"{self.result.calculated_times_s[i] * 1000.0:.4f}",
                             f"{self.result.residuals_s[i] * 1000.0:.4f}",
                             f"{self.result.ray_parameters[i]:.10g}",
                             f"{self.reg_slider.value() / 100.0:.2f}",
-                            (
-                                "" if self.comparison_vs30.get("first_peak") is None
-                                else f"{self.comparison_vs30['first_peak'].value_mps:.3f}"
-                            ),
-                            (
-                                "" if self.comparison_vs30.get("first_cross") is None
-                                else f"{self.comparison_vs30['first_cross'].value_mps:.3f}"
-                            ),
-                            (
-                                "" if self.comparison_vs30.get("max_peak") is None
-                                else f"{self.comparison_vs30['max_peak'].value_mps:.3f}"
-                            ),
+                            *[
+                                ""
+                                if self.comparison_vs30.get(kind) is None
+                                else f"{self.comparison_vs30[kind].value_mps:.3f}"
+                                for kind in PICK_KINDS
+                            ],
                             f"{self._extrapolation_weight_factor():.3f}",
                             "" if self.current_vs30 is None else f"{self.current_vs30.extrapolated_thickness_m:.3f}",
                             (
@@ -2273,11 +3195,104 @@ class RayPathMainWindow(QMainWindow):
                                 if self.current_vs30 is None or self.current_vs30.extrapolated_velocity_mps is None
                                 else f"{self.current_vs30.extrapolated_velocity_mps:.3f}"
                             ),
+                            APP_VERSION,
+                            PROJECT_SCHEMA_VERSION,
                         ]
                     )
-            self.status_label.setText(f"Exported {target.name}")
+            if self.observation_review:
+                qc_target = target.with_name(f"{target.stem}_waveform_qc.csv")
+                self._export_waveform_qc_csv(qc_target)
+                self.status_label.setText(f"Exported {target.name} and {qc_target.name}")
+            else:
+                self.status_label.setText(f"Exported {target.name}")
         except Exception as exc:
             self._show_error("Unable to export CSV", exc)
+
+    def _export_waveform_qc_csv(self, target: Path) -> None:
+        """Write a companion receiver-level QC and exclusions schedule."""
+
+        with target.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "Test",
+                    "Receiver Depth (m)",
+                    "Review State",
+                    "Included in Inversion",
+                    "Pick Uncertainty (ms)",
+                    "Left Pre-Trigger Noise RMS (recorded units)",
+                    "Right Pre-Trigger Noise RMS (recorded units)",
+                    "Left SNR (dB)",
+                    "Right SNR (dB)",
+                    "Sign-Reversed Correlation",
+                    "Correlation Lag (ms)",
+                    "First Peak/Trough Disagreement (ms)",
+                    "Individual Zero-Cross Disagreement (ms)",
+                    "Maximum-Peak Disagreement (ms)",
+                    "Reversed Polarity",
+                    "Sample Interval (ms)",
+                    "Sample Interval Maximum Deviation (%)",
+                    "Possible Clipping",
+                    "Constant Trace",
+                    "QC Warnings",
+                    "Analyst Comment",
+                    "Application Version",
+                    "Project Schema Version",
+                ]
+            )
+
+            def number(value: float | None, decimals: int = 3) -> str:
+                if value is None:
+                    return ""
+                if math.isinf(value):
+                    return "inf" if value > 0.0 else "-inf"
+                return f"{value:.{decimals}f}"
+
+            for record in self.waveform_records:
+                qc = calculate_waveform_qc(record)
+                writer.writerow(
+                    [
+                        record.test_number,
+                        f"{record.depth_m:.4f}",
+                        REVIEW_LABELS.get(record.review_state, record.review_state),
+                        "No" if record.is_excluded else "Yes",
+                        number(record.pick_uncertainty_ms),
+                        number(qc.noise_rms_left, 6),
+                        number(qc.noise_rms_right, 6),
+                        number(qc.snr_left_db, 2),
+                        number(qc.snr_right_db, 2),
+                        number(qc.sign_reversed_correlation, 4),
+                        number(qc.correlation_lag_ms),
+                        number(qc.first_peak_disagreement_ms),
+                        number(qc.zero_cross_disagreement_ms),
+                        number(qc.max_peak_disagreement_ms),
+                        "Yes" if qc.polarity_reversed else "No",
+                        number(qc.sample_interval_ms),
+                        number(qc.sample_interval_deviation_pct, 4),
+                        "Yes" if qc.clipped_left or qc.clipped_right else "No",
+                        "Yes" if qc.constant_left or qc.constant_right else "No",
+                        "; ".join(qc.warnings),
+                        record.review_comment,
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ]
+                )
+            if not self.waveform_records:
+                for depth, metadata in sorted(self.observation_review.items()):
+                    state = str(metadata.get("review_state", "not_reviewed"))
+                    writer.writerow(
+                        [
+                            "",
+                            f"{depth:.4f}",
+                            REVIEW_LABELS.get(state, state),
+                            "No" if state == "rejected" else "Yes",
+                            number(metadata.get("pick_uncertainty_ms")),
+                            *([""] * 15),
+                            str(metadata.get("review_comment", "")),
+                            APP_VERSION,
+                            PROJECT_SCHEMA_VERSION,
+                        ]
+                    )
 
     @Slot()
     def export_pdf_report(self) -> None:
@@ -2438,6 +3453,11 @@ class RayPathMainWindow(QMainWindow):
 
         def p(text: Any, style: str = "SmallText") -> Any:
             return Paragraph(escape(str(text)), styles[style])
+
+        def metric_text(value: float, decimals: int = 1) -> str:
+            if math.isinf(value):
+                return "Inf" if value > 0.0 else "-Inf"
+            return f"{value:.{decimals}f}"
 
         def table_style(header: bool = True, font_size: float = 7.5) -> Any:
             commands: list[tuple[Any, ...]] = [
@@ -2633,7 +3653,11 @@ class RayPathMainWindow(QMainWindow):
             canvas.setFillColor(copper)
             canvas.circle(16 * mm, 8.2 * mm, 1.0 * mm, fill=1, stroke=0)
             canvas.setFillColor(mid)
-            canvas.drawString(19 * mm, 7.5 * mm, "RayPath SCPT - Engineering interpretation report")
+            canvas.drawString(
+                19 * mm,
+                7.5 * mm,
+                f"RayPath SCPT v{APP_VERSION} - Engineering interpretation report",
+            )
             canvas.drawRightString(page_width - 15 * mm, 7.5 * mm, f"Page {document.page}")
             canvas.restoreState()
 
@@ -2683,6 +3707,8 @@ class RayPathMainWindow(QMainWindow):
 
         metadata = [
             [p("Report generated"), p(report_time.strftime("%Y-%m-%d %H:%M %Z"))],
+            [p("Application version"), p(APP_VERSION)],
+            [p("Project schema"), p(PROJECT_SCHEMA_VERSION)],
             [p("Project"), p(self.project_path.name if self.project_path else "Untitled")],
             [p("GRU source"), p(self.gru_path.name if self.gru_path else "Manual / CSV observations")],
             [p("Source offset"), p(f"{self.offset_spin.value():.3f} m")],
@@ -2692,6 +3718,21 @@ class RayPathMainWindow(QMainWindow):
             [p("Deepest receiver"), p(f"{selected_result.depths_m[-1]:.2f} m")],
             [p("GRU pre-trigger correction"), p(f"{GRU_PRE_TRIGGER_MS:.1f} ms")],
         ]
+        if self.observation_review:
+            accepted_count, rejected_count, unreviewed_count = self._review_counts()
+            metadata.extend(
+                [
+                    [p("Waveform review"), p(
+                        f"{accepted_count} accepted; {rejected_count} rejected/excluded; "
+                        f"{unreviewed_count} not reviewed"
+                    )],
+                    [p("QC warning thresholds"), p(
+                        f"SNR < {QC_SNR_WARNING_DB:g} dB; sign-reversed correlation < "
+                        f"{QC_CORRELATION_WARNING:.2f}; PT disagreement > max("
+                        f"{QC_PICK_DISAGREEMENT_WARNING_MS:g} ms, two samples); sample-interval variation > 1%"
+                    )],
+                ]
+            )
         metadata_table = Table(metadata, colWidths=[58 * mm, content_width - 58 * mm])
         metadata_table.setStyle(
             TableStyle(
@@ -2747,6 +3788,16 @@ class RayPathMainWindow(QMainWindow):
         story.append(Spacer(1, 3 * mm))
         story.append(
             Paragraph(
+                "Arrival definitions: First peak/trough is the mean of the reviewed left and right extrema; "
+                "Pair crossover is one reviewed time where the reversed traces intersect after arrival; "
+                "Individual zero crossing is the mean of two per-trace zero-axis crossings and is experimental; "
+                "Maximum peak is the mean of two maximum-amplitude times and is experimental.",
+                styles["ReportNote"],
+            )
+        )
+        story.append(Spacer(1, 2 * mm))
+        story.append(
+            Paragraph(
                 "Vs30 is calculated as 30 divided by the summed vertical shear-wave travel time. Profiles "
                 "between 25 m and 30 m use the configured interval weighting only to estimate the missing depth. "
                 "Automatic waveform suggestions should be reviewed by a qualified operator before relying on this report.",
@@ -2775,19 +3826,144 @@ class RayPathMainWindow(QMainWindow):
         story.append(Paragraph("Receiver pick times", styles["SectionHeading"]))
         story.append(Spacer(1, 2 * mm))
         pick_rows: list[list[Any]] = [
-            ["Depth (m)", "First peak (ms)", "First cross (ms)", "Maximum peak (ms)"]
+            ["Depth (m)", *[f"{PICK_LABELS[kind]} (ms)" for kind in PICK_KINDS]]
         ]
         for row in range(self.input_table.rowCount()):
             values = []
-            for column in range(4):
+            for column in range(1 + len(PICK_KINDS)):
                 item = self.input_table.item(row, column)
                 values.append(item.text().strip() if item else "")
             if not any(values):
                 continue
             pick_rows.append([p(value or "-") for value in values])
-        pick_table = LongTable(pick_rows, colWidths=[35 * mm, 48 * mm, 48 * mm, 49 * mm], repeatRows=1)
+        pick_table = LongTable(
+            pick_rows,
+            colWidths=[28 * mm, *([38 * mm] * len(PICK_KINDS))],
+            repeatRows=1,
+        )
         pick_table.setStyle(table_style(font_size=7.2))
         story.append(pick_table)
+
+        if self.waveform_records:
+            story.append(PageBreak())
+            story.append(Paragraph("Waveform QC and exclusions schedule", styles["SectionHeading"]))
+            story.append(
+                Paragraph(
+                    "QC metrics are deterministic review aids. A warning does not automatically reject an "
+                    "observation. Only records explicitly marked Rejected are excluded from inversion. "
+                    "Recorded arrival uncertainty is audit information at this development stage and does not "
+                    "yet weight the inversion.",
+                    styles["ReportNote"],
+                )
+            )
+            qc_rows: list[list[Any]] = [
+                [
+                    "Depth",
+                    "Review state",
+                    "Unc.",
+                    "SNR L/R",
+                    "Noise RMS L/R",
+                    "Corr.",
+                    "Lag",
+                    "Delta PT/Z/M",
+                    "Polarity",
+                    "Warnings",
+                ]
+            ]
+            for record in self.waveform_records:
+                qc = calculate_waveform_qc(record)
+                qc_rows.append(
+                    [
+                        p(f"{record.depth_m:.2f}"),
+                        p(REVIEW_LABELS.get(record.review_state, record.review_state)),
+                        p("-" if record.pick_uncertainty_ms is None else f"{record.pick_uncertainty_ms:.3f}"),
+                        p(f"{metric_text(qc.snr_left_db)}/{metric_text(qc.snr_right_db)}"),
+                        p(f"{qc.noise_rms_left:.3g}/{qc.noise_rms_right:.3g}"),
+                        p(f"{qc.sign_reversed_correlation:.3f}"),
+                        p(f"{qc.correlation_lag_ms:+.2f}"),
+                        p(
+                            "/".join(
+                                    "-" if value is None else f"{value:.1f}"
+                                for value in (
+                                    qc.first_peak_disagreement_ms,
+                                    qc.zero_cross_disagreement_ms,
+                                    qc.max_peak_disagreement_ms,
+                                )
+                            )
+                        ),
+                        p("Yes" if qc.polarity_reversed else "No"),
+                        p("None" if not qc.warnings else "; ".join(qc.warnings)),
+                    ]
+                )
+            qc_table = LongTable(
+                qc_rows,
+                colWidths=[
+                    12 * mm,
+                    25 * mm,
+                    12 * mm,
+                    18 * mm,
+                    20 * mm,
+                    13 * mm,
+                    13 * mm,
+                    24 * mm,
+                    15 * mm,
+                    28 * mm,
+                ],
+                repeatRows=1,
+            )
+            qc_table.setStyle(table_style(font_size=5.5))
+            story.append(qc_table)
+
+            commented = [record for record in self.waveform_records if record.review_comment]
+            if commented:
+                story.append(Spacer(1, 4 * mm))
+                story.append(Paragraph("Analyst comments", styles["Heading3"]))
+                comment_rows = [["Depth (m)", "Review state", "Comment"]]
+                comment_rows.extend(
+                    [
+                        p(f"{record.depth_m:.2f}"),
+                        p(REVIEW_LABELS.get(record.review_state, record.review_state)),
+                        p(record.review_comment),
+                    ]
+                    for record in commented
+                )
+                comment_table = LongTable(
+                    comment_rows,
+                    colWidths=[20 * mm, 35 * mm, 125 * mm],
+                    repeatRows=1,
+                )
+                comment_table.setStyle(table_style(font_size=7.0))
+                story.append(comment_table)
+        elif self.observation_review:
+            story.append(PageBreak())
+            story.append(Paragraph("Saved waveform review and exclusions", styles["SectionHeading"]))
+            story.append(
+                Paragraph(
+                    "The referenced raw GRU file was unavailable when this report was generated. Saved analyst "
+                    "review state, uncertainty, comments, and exclusions are retained below; signal QC metrics "
+                    "could not be recalculated.",
+                    styles["ReportNote"],
+                )
+            )
+            saved_rows: list[list[Any]] = [["Depth (m)", "Review state", "Uncertainty (ms)", "Comment"]]
+            for depth, metadata in sorted(self.observation_review.items()):
+                state = str(metadata.get("review_state", "not_reviewed"))
+                uncertainty = metadata.get("pick_uncertainty_ms")
+                saved_rows.append(
+                    [
+                        p(f"{depth:.2f}"),
+                        p(REVIEW_LABELS.get(state, state)),
+                        p("-" if uncertainty is None else f"{float(uncertainty):.3f}"),
+                        p(str(metadata.get("review_comment", "")) or "-"),
+                    ]
+                )
+            saved_table = LongTable(
+                saved_rows,
+                colWidths=[25 * mm, 45 * mm, 30 * mm, 80 * mm],
+                repeatRows=1,
+            )
+            saved_table.setStyle(table_style(font_size=7.0))
+            story.append(saved_table)
 
         story.append(PageBreak())
         story.append(Paragraph("Layer velocity results", styles["SectionHeading"]))
@@ -2797,9 +3973,7 @@ class RayPathMainWindow(QMainWindow):
                 "Layer",
                 "Top (m)",
                 "Bottom (m)",
-                "First peak Vs",
-                "First cross Vs",
-                "Max peak Vs",
+                *[f"{PICK_LABELS[kind]} Vs" for kind in PICK_KINDS],
                 "Selected residual (ms)",
             ]
         ]
@@ -2820,7 +3994,7 @@ class RayPathMainWindow(QMainWindow):
             )
         layer_table = LongTable(
             layer_rows,
-            colWidths=[14 * mm, 22 * mm, 24 * mm, 29 * mm, 30 * mm, 28 * mm, 33 * mm],
+            colWidths=[12 * mm, 18 * mm, 20 * mm, *([26 * mm] * len(PICK_KINDS)), 26 * mm],
             repeatRows=1,
         )
         layer_table.setStyle(table_style(font_size=6.9))
@@ -2834,6 +4008,18 @@ class RayPathMainWindow(QMainWindow):
     def run_inversion(self) -> None:
         if self._thread is not None:
             return
+        unreviewed = sum(record.review_state == "not_reviewed" for record in self.waveform_records)
+        if unreviewed:
+            answer = QMessageBox.question(
+                self,
+                "Unreviewed waveform observations",
+                f"{unreviewed} observation(s) are still Not reviewed. They are included unless explicitly "
+                "Rejected. Run the inversion with these observations?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         try:
             if self.waveform_records:
                 depths, times_by_pick_s = self._read_all_pick_rows()
@@ -2890,7 +4076,11 @@ class RayPathMainWindow(QMainWindow):
         result = self.result
         assert result is not None
         state = "Converged" if result.success else "Usable solution (optimizer warning)"
-        self.status_label.setText(f"{state} — {result.iterations} iterations — {result.message}")
+        _accepted, rejected, unreviewed = self._review_counts()
+        qc_suffix = f" — {rejected} rejected, {unreviewed} unreviewed" if self.observation_review else ""
+        self.status_label.setText(
+            f"{state} — {result.iterations} iterations — {result.message}{qc_suffix}"
+        )
         self.rmse_label.setText(f"RMSE: {result.rmse_s * 1000.0:.3f} ms")
         self._update_result_summary(result)
         if not result.success:
@@ -2954,11 +4144,16 @@ class RayPathMainWindow(QMainWindow):
                 vs30_note = f" Vs30: {self.current_vs30.value_mps:.1f} m/s (fully measured to 30 m)."
         else:
             vs30_note = f" Vs30 unavailable: {self.vs30_unavailable_reason or 'insufficient profile data'}."
+        if self.observation_review:
+            _accepted, rejected, unreviewed = self._review_counts()
+            review_note = f" Waveform review: {rejected} rejected/excluded; {unreviewed} not reviewed."
+        else:
+            review_note = ""
         self.result_summary.setText(
             f"{state}. {result.depths_m.size} layers, source offset {self.offset_spin.value():.3f} m, "
             f"{PICK_LABELS.get(str(self.estimator_combo.currentData()), 'Selected')} model, "
             f"regularisation {self.reg_slider.value() / 100.0:.2f}. Final RMSE: {result.rmse_s * 1000.0:.3f} ms."
-            f"{vs30_note}"
+            f"{vs30_note}{review_note}"
         )
 
     @Slot(str, str)
@@ -3008,9 +4203,10 @@ class RayPathMainWindow(QMainWindow):
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column in (0, 3, 4, 5, 6):
+                residual_column = 3 + len(PICK_KINDS)
+                if column == 0 or 3 <= column <= residual_column:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if column == 6:
+                if column == residual_column:
                     magnitude = abs(result.residuals_s[row] * 1000.0)
                     item.setForeground(QColor("#3fb950" if magnitude < 1.0 else "#d29922" if magnitude < 3.0 else "#f85149"))
                 self.result_table.setItem(row, column, item)
@@ -3151,13 +4347,15 @@ class RayPathMainWindow(QMainWindow):
         QMessageBox.about(
             self,
             f"About {APP_NAME}",
-            "<h3>RayPath SCPT</h3>"
+            f"<h3>RayPath SCPT {APP_VERSION}</h3>"
+            f"<p>Project schema version {PROJECT_SCHEMA_VERSION}.</p>"
             "<p>SI-only SCPT arrival-time picking and regularised shear-wave velocity inversion.</p>"
             "<p>The direct-ray forward model solves Snell's-law refraction with SciPy Brent root finding; "
             "layer velocities are estimated with bounded L-BFGS-B least squares.</p>"
             f"<p>GRU imports apply the undocumented {GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction before picking "
             "or velocity calculation.</p>"
-            "<p>Automatic waveform markers are suggestions and must be reviewed by a qualified operator.</p>",
+            "<p>Automatic waveform markers and QC warnings are review aids. Rejection is always an explicit "
+            "analyst decision; recorded uncertainty does not yet weight the inversion.</p>",
         )
 
 
@@ -3196,7 +4394,7 @@ def application_stylesheet() -> str:
     QPushButton:disabled { color: #6e7681; border-color: #30363d; }
     QPushButton#primaryButton { background: #238636; border: 1px solid #2ea043; font-size: 11pt; font-weight: 700; }
     QPushButton#primaryButton:hover { background: #2ea043; }
-    QLineEdit, QDoubleSpinBox, QComboBox {
+    QLineEdit, QPlainTextEdit, QDoubleSpinBox, QComboBox {
         background: #0d1117; color: #f0f6fc; border: 1px solid #30363d;
         border-radius: 4px; padding: 5px;
     }
@@ -3254,6 +4452,7 @@ def main() -> int:
         return run_self_test()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("RayPath SCPT")
     app.setStyle("Fusion")
     palette = QPalette()

@@ -1,3 +1,10 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# Project data, generated reports, and Windows launchers
+*.[Gg][Rr][Uu]
+*.[Rr][Pp][Ss][Cc][Pp][Tt]
+*.[Pp][Dd][Ff]
+*.[Cc][Mm][Dd]
+*.[Vv][Bb][Ss]

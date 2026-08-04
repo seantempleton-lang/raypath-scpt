@@ -6,6 +6,52 @@
 **Primary platform:** Windows desktop, Python 3.12, PySide6  
 **Units:** SI only — metres (m), milliseconds (ms), and metres per second (m/s)
 
+## 0. Current roadmap progress
+
+**M0 — Baseline freeze: in progress**
+
+Completed on 5 August 2026:
+
+- assigned application version `0.1.0-alpha.1` and explicit project schema version 3;
+- recorded version identifiers in projects, CSV exports, PDF reports, the application metadata, and About dialog;
+- retained backward-compatible loading for project schemas 1, 2, and 3;
+- added headless numerical, inversion, Vs30, and GRU regression tests;
+- added offscreen project round-trip and legacy migration tests;
+- added a synthetic paired-waveform GRU fixture and reviewed project fixture; and
+- added `scripts/verify.cmd` as the policy-independent local release verification command, with a PowerShell equivalent in `scripts/verify.ps1`.
+
+Remaining before M0 is closed:
+
+- capture approved visual reference images and a reference PDF from a suitable de-identified real dataset; and
+- connect the verification command to the future automated build/release workflow.
+
+**M1 — Technically corrected picker and Vs30: in progress**
+
+Completed on 5 August 2026 (WP-01A — arrival-definition correction):
+
+- updated the application to `0.2.0-alpha.1` and project schema 4;
+- introduced one true pairwise waveform-crossover time per reversed trace pair;
+- renamed the former per-trace `first_cross` interpretation to individual zero crossing and labelled it experimental;
+- retained first peak/trough and maximum-peak comparisons, with maximum peak labelled experimental;
+- expanded the guided picker from six to seven reviewed marks and updated all plots, tables, CSV exports, Vs30 comparisons, and PDF report tables;
+- added deterministic pair-crossover and schema-migration tests; and
+- preserved schema-1-to-3 values as individual zero crossings without silently reclassifying them as pair crossovers.
+
+Completed on 5 August 2026 (WP-01B — minimum waveform QC and review state):
+
+- updated the application to `0.3.0-alpha.1` and project schema 5;
+- added advisory per-record SNR, sign-reversed correlation and lag, first peak/trough polarity and timing,
+  clipping, constant-trace, and sample-interval QC metrics;
+- added a normalised butterfly overlay and live warning display in the picker;
+- added analyst states for accepted, accepted with comment, rejected, and not reviewed;
+- added an auditable arrival-time uncertainty field with a half-sample default;
+- excluded only explicitly rejected records from inversion and made exclusions visible in the input table and
+  waveform waterfall;
+- added project persistence, a companion waveform-QC CSV, and PDF QC/exclusions and comments schedules; and
+- verified the advisory thresholds against the supplied 74-record GRU profile without automatic rejection.
+
+The next active item is WP-02: make pre-trigger handling and source/receiver geometry auditable.
+
 ## 1. Purpose
 
 RayPath SCPT is a desktop application for processing Seismic Cone Penetration Test (SCPT) records. Its principal objective is to reduce false or unphysical interval-velocity spikes by fitting measured shear-wave arrival times with a one-dimensional, refracted ray-path model governed by Snell's Law.
@@ -55,7 +101,8 @@ Implemented:
 - Interpretation of channels 17 and 18 as the left and right source-direction traces.
 - A 50 ms pre-trigger correction applied during GRU import.
 - Validation that imported time arrays increase monotonically and span the configured trigger time.
-- Editable manual input table for depth and the three currently supported arrival definitions.
+- Editable manual input table for depth and four arrival interpretations: first peak/trough, pair crossover,
+  experimental individual zero crossing, and experimental maximum peak.
 - Excel/CSV-style grid paste support.
 - Project creation, opening, saving, and Save As using the `.rpscpt` project format.
 - CSV export.
@@ -75,21 +122,34 @@ Implemented:
 - Paired display of channel 17 in blue and channel 18 in red.
 - A maximisable and minimisable picker window.
 - Automatic zoom to 25 ms either side of the maximum peak region.
-- Guided six-pick workflow: left then right for first peak, first cross, and maximum peak.
+- Guided seven-pick workflow: left/right first peak or trough, one pair crossover, left/right individual zero
+  crossing, and left/right maximum peak.
 - Automatic movement to the next required pick.
 - Save-and-next or re-pick prompt after completing an interval.
 - Pick mode can be restored after using Matplotlib navigation without losing the current zoom extent.
 - Bold, enlarged live pick-value display.
-- Suggested picks based on pre-trigger baseline noise, a smoothed trace, amplitude thresholds, local extrema, and individual trace zero crossings.
+- Suggested picks based on pre-trigger baseline noise, a smoothed trace, amplitude thresholds, local extrema,
+  individual trace zero crossings, and a post-arrival intersection of independently normalised reversed traces.
+- A normalised sign-reversed butterfly overlay for paired-trace comparison.
+- Live per-depth SNR, sign-reversed correlation and lag, polarity, peak/trough disagreement, clipping,
+  constant-trace, and sample-interval QC warnings.
+- Analyst review states, comments, and arrival-time uncertainty, with a half-sample default.
+- Explicit rejection and visible exclusion from inversion.
 - A waveform waterfall plot containing the reviewed picks.
 
 Current limitations:
 
-- The implemented "first cross" is an individual zero-axis crossing on each trace. MBIE/NZGS defines the first crossover as the single time at which the reversed-polarity traces cross each other after first arrival.
 - Peak/trough terminology and polarity validation are not explicitly enforced.
 - Maximum peak is useful for sensitivity comparison but is not a primary arrival definition in the referenced downhole guidance.
-- The two independently selected left/right times are arithmetically averaged without first requiring a polarity, phase, timing, or quality-consistency check.
-- There is no formal signal-to-noise ratio, clipping check, polarity-reversal score, correlation score, pick uncertainty, acceptance flag, or operator comment.
+- First peak/trough and experimental per-trace times are arithmetically averaged without first requiring a
+  polarity, phase, timing, or quality-consistency check.
+- The automatically suggested pair crossover uses amplitude normalisation for robustness but has no current
+  correlation or butterfly-quality threshold; it must be manually reviewed.
+- The current QC thresholds are transparent engineering defaults but have not yet been calibrated against a
+  sufficiently broad labelled dataset or independently validated.
+- One uncertainty value applies to the accepted arrival at a depth; separate uncertainty values for every
+  comparison pick are not implemented.
+- Recorded uncertainty is audit information only and does not yet weight the inversion; that is part of WP-04.
 - Repeated impacts at the same depth cannot yet be retained individually and stacked.
 
 ### 3.4 Numerical backend
@@ -106,7 +166,8 @@ Implemented:
 - An analytical travel-time gradient based on Fermat's principle.
 - A user-adjustable regularisation term that penalises curvature in log velocity.
 - Background-thread execution so the GUI remains responsive.
-- Comparison models for first peak, first cross, and maximum peak picks.
+- Comparison models for first peak/trough, true pair crossover, experimental individual zero crossing, and
+  experimental maximum peak picks.
 
 Current limitations:
 
@@ -136,7 +197,8 @@ Current limitations:
 - The model plot has no uncertainty envelope or depth-resolution indicator.
 - There is no corrected vertical travel-time plot or slope-method interpretation.
 - CPT stratigraphy and user-defined geological boundaries cannot be overlaid or used as model constraints.
-- Records cannot be visually excluded and immediately re-inverted from the plots.
+- Rejected waveform records are visibly excluded and omitted at the next inversion, but plot-based toggling is
+  not yet available outside the waveform picker.
 
 ### 3.6 Vs30 analysis
 
@@ -144,7 +206,7 @@ Implemented:
 
 - `Vs30 = 30 / sum(h_i / Vs_i)` using vertical shear-wave travel time.
 - Truncation of layers that cross 30 m.
-- Comparison of Vs30 from the three existing pick definitions.
+- Comparison of Vs30 from all four arrival interpretations.
 - Recalculation at different smoothing settings.
 - Extrapolation from profiles reaching at least 25 m.
 - An experimental 0.25-to-4.0 slider that changes the shallower/deeper weighting used to estimate the missing 25-to-30 m interval.
@@ -166,6 +228,7 @@ Implemented:
 - Full-page engineering plots.
 - Velocity, arrival-fit, ray-path, and waveform-waterfall figures.
 - Tables of reviewed picks, model results, RMSE, and Vs30 comparisons.
+- A waveform-QC and exclusions schedule, analyst comments, uncertainty, and a companion receiver-level QC CSV.
 - Omission of the former Vs30 smoothing-sensitivity graph from the PDF while retaining the in-application analysis.
 
 Current limitations:
@@ -272,6 +335,11 @@ Packaging begins only after the M3 release gates are satisfied and the M4 valida
 - The PDF displays the method definitions, QC result, picks, and exclusions.
 
 **Dependencies:** WP-00.
+
+**Status:** In progress. Steps 1 through 6 are implemented for PT, CO, individual zero crossing, and maximum
+peak in schema 5. First-arrival and cross-correlation methods remain deferred. Repeated-impact retention,
+stacking, keyboard shortcuts, undo/redo, pick history, broader threshold calibration, and independent validation
+remain outstanding.
 
 ### WP-02 — Make trigger handling and geometry auditable
 
@@ -547,9 +615,11 @@ Packaging begins only after the M3 release gates are satisfied and the M4 valida
 
 The next implementation cycle should be limited to the following sequence:
 
-1. **WP-00 baseline tests and versioning.** Freeze trusted current behaviour before data definitions change.
-2. **WP-01 pick terminology migration.** Rename the current individual zero crossing and add a true pairwise crossover.
-3. **WP-01 QC minimum.** Add polarity, correlation, SNR, acceptance, comment, and uncertainty fields.
+1. **WP-00 baseline tests and versioning — substantially complete.** Visual references and CI integration remain.
+2. **WP-01 pick terminology migration — complete.** The schema-4 picker distinguishes pair crossover from
+   the experimental individual zero crossing.
+3. **WP-01 QC minimum — complete.** Polarity, correlation/lag, SNR, signal-integrity warnings, analyst state,
+   comments, uncertainty, exclusions, and report schedules are implemented in schema 5.
 4. **WP-02 pre-trigger auditability.** Make 50 ms the visible default and preserve raw/corrected times.
 5. **WP-03 TS Method 1.** Implement last-layer extension, shallow adjustment, and 5% bounds.
 6. **Report changes.** Clearly separate standards-facing and experimental outputs.
