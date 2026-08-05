@@ -125,6 +125,7 @@ class GruImportBaselineTests(unittest.TestCase):
         self.assertEqual([record.depth_m for record in records], [2.0, 4.0])
         np.testing.assert_array_equal(records[0].time_ms, [-50.0, -25.0, 0.0, 25.0, 50.0])
         self.assertEqual(records[0].pre_trigger_ms, GRU_PRE_TRIGGER_MS)
+        np.testing.assert_array_equal(records[0].recorded_time_ms, [0.0, 25.0, 50.0, 75.0, 100.0])
         self.assertEqual(records[0].pick_uncertainty_ms, 12.5)
         np.testing.assert_array_equal(records[0].left, [0.0, 2.0, 4.0, 2.0, 0.0])
         np.testing.assert_array_equal(records[0].right, [0.0, -2.0, -4.0, -2.0, 0.0])
@@ -132,6 +133,14 @@ class GruImportBaselineTests(unittest.TestCase):
     def test_configured_pretrigger_must_be_spanned(self) -> None:
         with self.assertRaises(GruFormatError):
             parse_gru(FIXTURES / "minimal.GRU", pre_trigger_ms=150.0)
+
+    def test_nondefault_pretrigger_preserves_both_time_references(self) -> None:
+        record = parse_gru(FIXTURES / "minimal.GRU", pre_trigger_ms=25.0)[0]
+
+        np.testing.assert_array_equal(record.time_ms, [-25.0, 0.0, 25.0, 50.0, 75.0])
+        np.testing.assert_array_equal(record.recorded_time_ms, [0.0, 25.0, 50.0, 75.0, 100.0])
+        record.set_pick("first_peak", 17, 12.5)
+        self.assertAlmostEqual(record.recorded_picks_ms()["first_peak_17"], 37.5)
 
     def test_negative_pretrigger_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

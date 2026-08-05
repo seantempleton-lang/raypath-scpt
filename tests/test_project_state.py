@@ -10,17 +10,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
 from raypath_scpt import (
     APP_VERSION,
+    GruImportOptionsDialog,
     PICK_SEQUENCE,
     PROJECT_SCHEMA_VERSION,
     RayPathMainWindow,
     WaveformPickerDialog,
     add_suggested_picks,
+    apply_application_theme,
     parse_gru,
 )
 
@@ -85,16 +89,66 @@ class ProjectStateTests(unittest.TestCase):
             self.assertIn("[0/7]", dialog.record_list.item(0).text())
             self.assertEqual(dialog.active_kind, "first_peak")
             self.assertEqual(dialog.active_channel, 17)
+            self.assertEqual(dialog.accept_current_button.text(), "Accept Current Picks")
+            self.assertAlmostEqual(dialog.zoom_half_width_spin.value(), 20.0)
+            self.assertAlmostEqual(dialog.canvas.axes.get_xlim()[1] - dialog.canvas.axes.get_xlim()[0], 40.0)
+
+            dialog.zoom_half_width_spin.setValue(10.0)
+
+            self.assertAlmostEqual(dialog.max_peak_half_width_ms, 10.0)
+            self.assertAlmostEqual(dialog.canvas.axes.get_xlim()[1] - dialog.canvas.axes.get_xlim()[0], 20.0)
         finally:
             dialog.close()
 
-    def test_waveform_review_state_round_trips_in_schema_five(self) -> None:
+    def test_light_theme_is_default_and_switch_updates_all_canvases(self) -> None:
+        apply_application_theme(self.app, dark_mode=False)
+        window = RayPathMainWindow()
+        try:
+            self.assertFalse(window.dark_mode_toggle.isChecked())
+            self.assertFalse(window.dark_mode)
+            self.assertEqual(window.velocity_canvas.axes_color, "#ffffff")
+
+            window.dark_mode_toggle.setChecked(True)
+
+            self.assertTrue(window.dark_mode)
+            self.assertTrue(bool(self.app.property("dark_mode")))
+            for canvas in (
+                window.velocity_canvas,
+                window.ray_canvas,
+                window.fit_canvas,
+                window.waterfall_canvas,
+                window.vs30_canvas,
+            ):
+                self.assertTrue(canvas.dark_mode)
+                self.assertEqual(canvas.axes_color, "#0d1117")
+        finally:
+            window.dark_mode_toggle.setChecked(False)
+            window._set_dirty(False)
+            window.close()
+
+    def test_accept_current_picks_marks_reviewed_and_advances(self) -> None:
+        records = parse_gru(FIXTURES / "minimal.GRU")
+        add_suggested_picks(records)
+        records[0].review_comment = "Synthetic fixture warnings reviewed."
+        dialog = WaveformPickerDialog(records, "minimal.GRU")
+        try:
+            dialog._accept_current_picks()
+
+            self.assertEqual(records[0].review_state, "accepted_with_comment")
+            self.assertIsNotNone(records[0].pick_uncertainty_ms)
+            self.assertEqual(dialog.record_list.currentRow(), 1)
+            self.assertIn("ACCEPTED + NOTE", dialog.record_list.item(0).text())
+        finally:
+            dialog.close()
+
+    def test_waveform_review_and_timing_audit_round_trip_in_schema_six(self) -> None:
         source = RayPathMainWindow()
         loaded = RayPathMainWindow()
         try:
-            source.waveform_records = parse_gru(FIXTURES / "minimal.GRU")
+            source.waveform_records = parse_gru(FIXTURES / "minimal.GRU", pre_trigger_ms=25.0)
             add_suggested_picks(source.waveform_records)
             source.gru_path = (FIXTURES / "minimal.GRU").resolve()
+            source.gru_pre_trigger_ms = 25.0
             source.waveform_records[0].review_state = "accepted_with_comment"
             source.waveform_records[0].review_comment = "Reviewed despite a synthetic-fixture warning."
             source.waveform_records[0].pick_uncertainty_ms = 0.4
@@ -108,6 +162,13 @@ class ProjectStateTests(unittest.TestCase):
                 self.assertTrue(source.save_project())
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertIn("qc_metrics", payload["picks"][0])
+                self.assertEqual(payload["gru_pre_trigger_ms"], 25.0)
+                self.assertEqual(payload["pick_time_reference"], "relative_to_trigger")
+                self.assertIn("picks_trigger_relative_ms", payload["picks"][0])
+                self.assertIn("picks_recorded_ms", payload["picks"][0])
+                trigger_pick = payload["picks"][0]["picks_trigger_relative_ms"]["first_peak_17"]
+                recorded_pick = payload["picks"][0]["picks_recorded_ms"]["first_peak_17"]
+                self.assertAlmostEqual(recorded_pick - trigger_pick, 25.0)
                 loaded._load_project(path)
 
             self.assertEqual(loaded.waveform_records[0].review_state, "accepted_with_comment")
@@ -116,12 +177,26 @@ class ProjectStateTests(unittest.TestCase):
                 "Reviewed despite a synthetic-fixture warning.",
             )
             self.assertAlmostEqual(loaded.waveform_records[0].pick_uncertainty_ms, 0.4)
+            self.assertAlmostEqual(loaded.gru_pre_trigger_ms, 25.0)
+            np.testing.assert_array_equal(
+                loaded.waveform_records[0].recorded_time_ms,
+                [0.0, 25.0, 50.0, 75.0, 100.0],
+            )
             self.assertTrue(loaded.waveform_records[1].is_excluded)
+            self.assertTrue(loaded.review_waveforms_button.isEnabled())
         finally:
             source._set_dirty(False)
             loaded._set_dirty(False)
             source.close()
             loaded.close()
+
+    def test_gru_import_dialog_exposes_the_fifty_ms_default(self) -> None:
+        dialog = GruImportOptionsDialog("minimal.GRU")
+        try:
+            self.assertAlmostEqual(dialog.pre_trigger_ms, 50.0)
+            self.assertIn("trigger-relative 0.000 ms", dialog.audit_label.text())
+        finally:
+            dialog.close()
 
     def test_rejected_waveform_depth_is_omitted_from_inversion_input(self) -> None:
         window = RayPathMainWindow()

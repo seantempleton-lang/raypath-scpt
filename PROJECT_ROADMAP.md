@@ -50,7 +50,18 @@ Completed on 5 August 2026 (WP-01B — minimum waveform QC and review state):
 - added project persistence, a companion waveform-QC CSV, and PDF QC/exclusions and comments schedules; and
 - verified the advisory thresholds against the supplied 74-record GRU profile without automatic rejection.
 
-The next active item is WP-02: make pre-trigger handling and source/receiver geometry auditable.
+Completed on 5 August 2026 (WP-02A — pre-trigger timing auditability):
+
+- updated the application to `0.4.0-alpha.1` and project schema 6;
+- added a GRU import timing dialog with a visible, editable 50 ms default;
+- retained the original recorded sample clock and trigger-relative analysis clock in memory;
+- stored the applied correction, recorded/relative sample bounds, sample interval, and both time references for
+  every saved pick;
+- reloaded raw GRU data using the correction saved with the project and rejected inconsistent timing audit data;
+- added the applied correction and arrival-time reference to PDF and CSV outputs; and
+- retained migration support for project schemas 1 through 5.
+
+The next active item is WP-02B: capture source/receiver survey geometry and use corrected receiver coordinates.
 
 ## 1. Purpose
 
@@ -99,7 +110,10 @@ Implemented:
 
 - Direct import of GOnsite/GORILLA `.GRU` records.
 - Interpretation of channels 17 and 18 as the left and right source-direction traces.
-- A 50 ms pre-trigger correction applied during GRU import.
+- A visible GRU import timing dialog with an editable 50 ms default.
+- Preservation of original recorded time and corrected trigger-relative time for every waveform.
+- Schema-6 timing audit data including the applied correction, time bounds, sample interval, and both time
+  references for every pick.
 - Validation that imported time arrays increase monotonically and span the configured trigger time.
 - Editable manual input table for depth and four arrival interpretations: first peak/trough, pair crossover,
   experimental individual zero crossing, and experimental maximum peak.
@@ -110,9 +124,7 @@ Implemented:
 
 Current limitations:
 
-- The 50 ms pre-trigger period is a global software constant rather than a visible, project-level import setting.
-- Raw recorded time and corrected trigger-relative time are not presented as separate auditable quantities.
-- There is no raw-file hash, imported-file manifest, application version, or project change history.
+- There is no raw-file hash, imported-file manifest, or project change history.
 - Instrument identity, calibration, operator, test date, site coordinates, source orientation, inclination, and depth datum are not captured in a structured project metadata model.
 
 ### 3.3 Waveform picker
@@ -121,11 +133,13 @@ Implemented:
 
 - Paired display of channel 17 in blue and channel 18 in red.
 - A maximisable and minimisable picker window.
-- Automatic zoom to 25 ms either side of the maximum peak region.
+- Automatic zoom to a user-selectable window, defaulting to 20 ms either side of the maximum peak region.
 - Guided seven-pick workflow: left/right first peak or trough, one pair crossover, left/right individual zero
   crossing, and left/right maximum peak.
 - Automatic movement to the next required pick.
 - Save-and-next or re-pick prompt after completing an interval.
+- One-click acceptance of the current automatic or manually adjusted picks, followed by advancement to the next
+  interval.
 - Pick mode can be restored after using Matplotlib navigation without losing the current zoom extent.
 - Bold, enlarged live pick-value display.
 - Suggested picks based on pre-trigger baseline noise, a smoothed trace, amplitude thresholds, local extrema,
@@ -189,6 +203,7 @@ Implemented:
 - Observed and calculated arrival-time fit.
 - Waveform waterfall with picks.
 - Comparison of all available pick-derived velocity models.
+- User-selectable light and dark interface themes, with light mode as the application default.
 - Results table with layer depths, velocity, and fitting error.
 - Convergence and RMSE reporting in the status bar.
 
@@ -370,6 +385,9 @@ remain outstanding.
 - Changing the pre-trigger or geometry invalidates existing inversion results and requires a rerun.
 
 **Dependencies:** WP-00. Coordinate with WP-01 project-schema changes.
+
+**Status:** In progress. Steps 1 through 3 are complete in schema 6. Step 4 is reserved for future formats.
+Steps 5 through 7 form WP-02B and are the next active implementation scope.
 
 ### WP-03 — Implement standards-facing Vs30 methods
 
@@ -620,11 +638,14 @@ The next implementation cycle should be limited to the following sequence:
    the experimental individual zero crossing.
 3. **WP-01 QC minimum — complete.** Polarity, correlation/lag, SNR, signal-integrity warnings, analyst state,
    comments, uncertainty, exclusions, and report schedules are implemented in schema 5.
-4. **WP-02 pre-trigger auditability.** Make 50 ms the visible default and preserve raw/corrected times.
-5. **WP-03 TS Method 1.** Implement last-layer extension, shallow adjustment, and 5% bounds.
-6. **Report changes.** Clearly separate standards-facing and experimental outputs.
+4. **WP-02 pre-trigger auditability — complete.** The correction is confirmed at import and both recorded and
+   trigger-relative clocks are retained in schema 6.
+5. **WP-02 geometry auditability.** Capture source/receiver survey metadata and use corrected coordinates where
+   inclination data are supplied.
+6. **WP-03 TS Method 1.** Implement last-layer extension, shallow adjustment, and 5% bounds.
+7. **Report changes.** Clearly separate standards-facing and experimental outputs.
 
-Completion of these six items defines Milestone M1. Depth-aware regularisation and ensemble uncertainty should begin only after the accepted arrival-time data model is stable.
+Completion of these seven items defines Milestone M1. Depth-aware regularisation and ensemble uncertainty should begin only after the accepted arrival-time data model is stable.
 
 ## 8. Release gates
 

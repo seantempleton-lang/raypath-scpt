@@ -164,13 +164,15 @@ from matplotlib.lines import Line2D
 
 
 APP_NAME = "RayPath SCPT"
-APP_VERSION = "0.3.0-alpha.1"
+APP_VERSION = "0.4.0-alpha.1"
 PROJECT_SUFFIX = ".rpscpt"
-PROJECT_SCHEMA_VERSION = 5
-SUPPORTED_PROJECT_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5})
+PROJECT_SCHEMA_VERSION = 6
+SUPPORTED_PROJECT_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5, 6})
 GRU_PRE_TRIGGER_MS = 50.0
+DEFAULT_PICKER_HALF_WIDTH_MS = 20.0
 VELOCITY_MIN = 50.0
 VELOCITY_MAX = 2000.0
+VELOCITY_PROFILE_DISPLAY_MAX = 600.0
 TRACE_PICK_KINDS = ("first_peak", "zero_cross", "max_peak")
 PAIR_PICK_KINDS = ("crossover",)
 PICK_KINDS = ("first_peak", "crossover", "zero_cross", "max_peak")
@@ -602,6 +604,20 @@ class WaveformRecord:
         """Return whether the analyst explicitly rejected this observation."""
 
         return self.review_state == "rejected"
+
+    @property
+    def recorded_time_ms(self) -> np.ndarray:
+        """Return the original GRU sample clock before trigger correction."""
+
+        return self.time_ms + self.pre_trigger_ms
+
+    def recorded_picks_ms(self) -> dict[str, float | None]:
+        """Return current picks expressed on the original GRU sample clock."""
+
+        return {
+            key: None if value is None else float(value) + self.pre_trigger_ms
+            for key, value in self.picks_ms.items()
+        }
 
 
 @dataclass(frozen=True)
@@ -1105,29 +1121,115 @@ class PasteTableWidget(QTableWidget):
 
 
 class MplCanvas(FigureCanvas):
-    """Matplotlib canvas with one dark-themed axes."""
+    """Matplotlib canvas that follows the application's light/dark theme."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self.figure = Figure(figsize=(6, 5), tight_layout=True)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure)
         self.setParent(parent)
-        self.apply_dark_style()
+        app = QApplication.instance()
+        self.dark_mode = bool(app.property("dark_mode")) if app is not None else False
+        self.apply_theme()
 
-    def apply_dark_style(self) -> None:
-        self.figure.set_facecolor("#161b22")
-        self.axes.set_facecolor("#0d1117")
-        self.axes.tick_params(colors="#c9d1d9")
+    @property
+    def figure_color(self) -> str:
+        return "#161b22" if self.dark_mode else "#f6f8fa"
+
+    @property
+    def axes_color(self) -> str:
+        return "#0d1117" if self.dark_mode else "#ffffff"
+
+    @property
+    def foreground_color(self) -> str:
+        return "#c9d1d9" if self.dark_mode else "#24292f"
+
+    @property
+    def muted_color(self) -> str:
+        return "#8b949e" if self.dark_mode else "#57606a"
+
+    @property
+    def grid_color(self) -> str:
+        return "#30363d" if self.dark_mode else "#d0d7de"
+
+    def legend_kwargs(self) -> dict[str, str]:
+        return {
+            "facecolor": self.figure_color,
+            "edgecolor": self.grid_color,
+            "labelcolor": self.foreground_color,
+        }
+
+    def set_dark_mode(self, enabled: bool) -> None:
+        self.dark_mode = bool(enabled)
+        self.apply_theme()
+
+    def apply_theme(self) -> None:
+        self.figure.set_facecolor(self.figure_color)
+        self.axes.set_facecolor(self.axes_color)
+        self.axes.tick_params(colors=self.foreground_color)
         for spine in self.axes.spines.values():
-            spine.set_color("#48515c")
-        self.axes.xaxis.label.set_color("#c9d1d9")
-        self.axes.yaxis.label.set_color("#c9d1d9")
-        self.axes.title.set_color("#f0f6fc")
-        self.axes.grid(True, color="#30363d", alpha=0.55, linewidth=0.7)
+            spine.set_color(self.grid_color)
+        self.axes.xaxis.label.set_color(self.foreground_color)
+        self.axes.yaxis.label.set_color(self.foreground_color)
+        self.axes.title.set_color(self.foreground_color)
+        self.axes.grid(True, color=self.grid_color, alpha=0.65, linewidth=0.7)
 
     def clear(self) -> None:
         self.axes.clear()
-        self.apply_dark_style()
+        self.apply_theme()
+
+
+class GruImportOptionsDialog(QDialog):
+    """Confirm the undocumented GRU pre-trigger correction before import."""
+
+    def __init__(self, source_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("GRU Import Timing")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        layout = QVBoxLayout(self)
+        heading = QLabel(f"Import {source_name}")
+        heading.setObjectName("minorTitle")
+        layout.addWidget(heading)
+        explanation = QLabel(
+            "GRU files do not record the pre-trigger duration in their header. Confirm the field setting "
+            "used for this acquisition. The correction is subtracted from the recorded sample clock, so "
+            "the trigger becomes 0 ms and all inversion arrival times are trigger-relative."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        form = QFormLayout()
+        self.pre_trigger_spin = QDoubleSpinBox()
+        self.pre_trigger_spin.setRange(0.0, 10000.0)
+        self.pre_trigger_spin.setDecimals(3)
+        self.pre_trigger_spin.setSingleStep(5.0)
+        self.pre_trigger_spin.setValue(GRU_PRE_TRIGGER_MS)
+        self.pre_trigger_spin.setSuffix(" ms")
+        self.pre_trigger_spin.setToolTip(
+            "Recorded time assigned to the physical trigger. The GORILLA field default used here is 50 ms."
+        )
+        form.addRow("Recorded pre-trigger period", self.pre_trigger_spin)
+        layout.addLayout(form)
+        self.audit_label = QLabel()
+        self.audit_label.setObjectName("accentLabel")
+        self.pre_trigger_spin.valueChanged.connect(self._update_audit_example)
+        layout.addWidget(self.audit_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Import & Review Waveforms")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._update_audit_example(self.pre_trigger_spin.value())
+
+    @property
+    def pre_trigger_ms(self) -> float:
+        return float(self.pre_trigger_spin.value())
+
+    def _update_audit_example(self, value_ms: float) -> None:
+        self.audit_label.setText(
+            f"Recorded {value_ms:.3f} ms → trigger-relative 0.000 ms. "
+            "Both references will be retained in the project audit data."
+        )
 
 
 class WaveformPickerDialog(QDialog):
@@ -1145,10 +1247,17 @@ class WaveformPickerDialog(QDialog):
         ("max_peak", 18): "#da3633",
     }
 
-    def __init__(self, records: list[WaveformRecord], source_name: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        records: list[WaveformRecord],
+        source_name: str,
+        parent: QWidget | None = None,
+        max_peak_half_width_ms: float = DEFAULT_PICKER_HALF_WIDTH_MS,
+    ) -> None:
         super().__init__(parent)
         self.records = records
         self.source_name = source_name
+        self.max_peak_half_width_ms = float(max_peak_half_width_ms)
         self.active_kind = "first_peak"
         self.active_channel: int | None = 17
         self.marker_buttons: dict[tuple[str, int | None], QRadioButton] = {}
@@ -1173,7 +1282,8 @@ class WaveformPickerDialog(QDialog):
             "Guided picking order: First peak/trough Left/blue, Right/red; one pair crossover; individual "
             "zero crossing Left/blue, Right/red; Maximum peak Left/blue, Right/red. Each click advances "
             "automatically. Individual zero crossings and maximum peaks are comparison aids. Suggestions "
-            f"are review aids only. GRU times include the {GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction."
+            f"are review aids only. GRU times include the {self.records[0].pre_trigger_ms:g} ms "
+            "pre-trigger correction."
         )
         guidance.setWordWrap(True)
         guidance.setObjectName("subtleLabel")
@@ -1225,6 +1335,13 @@ class WaveformPickerDialog(QDialog):
         self.review_comment_edit.textChanged.connect(self._review_controls_changed)
         review_layout.addRow("Comment", self.review_comment_edit)
         left_layout.addWidget(review_box)
+        self.accept_current_button = QPushButton("Accept Current Picks")
+        self.accept_current_button.setObjectName("acceptCurrentPicksButton")
+        self.accept_current_button.setToolTip(
+            "Mark the current automatic or manually adjusted picks as reviewed, then move to the next depth interval."
+        )
+        self.accept_current_button.clicked.connect(self._accept_current_picks)
+        left_layout.addWidget(self.accept_current_button)
         body.addWidget(left_panel)
 
         plot_panel = QWidget()
@@ -1248,6 +1365,18 @@ class WaveformPickerDialog(QDialog):
         )
         self.pick_mode_button.clicked.connect(self._return_to_pick_mode)
         navigation_row.addWidget(self.pick_mode_button)
+        navigation_row.addWidget(QLabel("Max-peak window"))
+        self.zoom_half_width_spin = QDoubleSpinBox()
+        self.zoom_half_width_spin.setRange(2.5, 500.0)
+        self.zoom_half_width_spin.setDecimals(1)
+        self.zoom_half_width_spin.setSingleStep(2.5)
+        self.zoom_half_width_spin.setValue(self.max_peak_half_width_ms)
+        self.zoom_half_width_spin.setSuffix(" ms each side")
+        self.zoom_half_width_spin.setToolTip(
+            "Set the time displayed before and after the mean left/right maximum peak."
+        )
+        self.zoom_half_width_spin.valueChanged.connect(self._zoom_half_width_changed)
+        navigation_row.addWidget(self.zoom_half_width_spin)
         plot_layout.addLayout(navigation_row)
         plot_layout.addWidget(self.canvas, 1)
 
@@ -1443,6 +1572,15 @@ class WaveformPickerDialog(QDialog):
         self.canvas.setFocus(Qt.FocusReason.MouseFocusReason)
         self._update_active_label()
 
+    def _zoom_half_width_changed(self, value_ms: float) -> None:
+        """Reframe the active waveform around its maximum peak."""
+
+        self.max_peak_half_width_ms = float(value_ms)
+        row = self.record_list.currentRow()
+        if row >= 0:
+            self._apply_max_peak_zoom(self.records[row])
+            self.canvas.draw_idle()
+
     def _on_plot_click(self, event: Any) -> None:
         row = self.record_list.currentRow()
         if row < 0 or self.toolbar.mode or event.inaxes is not self.canvas.axes or event.xdata is None:
@@ -1471,6 +1609,67 @@ class WaveformPickerDialog(QDialog):
             self._select_marker(*PICK_SEQUENCE[index + 1])
             return
         self._prompt_interval_complete()
+
+    @staticmethod
+    def _record_has_all_picks(record: WaveformRecord) -> bool:
+        """Return whether every marker required by the guided workflow is present."""
+
+        return all(
+            (
+                record.get_pair_pick(kind) is not None
+                if channel is None
+                else record.get_pick(kind, channel) is not None
+            )
+            for kind, channel in PICK_SEQUENCE
+        )
+
+    def _mark_record_accepted(self, record: WaveformRecord) -> bool:
+        """Validate and accept the record's current automatic or manual picks."""
+
+        if not self._record_has_all_picks(record):
+            QMessageBox.warning(
+                self,
+                "Incomplete picks",
+                f"All {len(PICK_SEQUENCE)} picks are required before this interval can be accepted.",
+            )
+            return False
+
+        qc = calculate_waveform_qc(record)
+        if qc.warnings and not record.review_comment:
+            comment, confirmed = QInputDialog.getMultiLineText(
+                self,
+                "QC comment required",
+                "Explain why the observation is accepted despite the QC warning(s):",
+                "",
+            )
+            if not confirmed or not comment.strip():
+                record.review_state = "not_reviewed"
+                return False
+            record.review_comment = comment.strip()
+
+        if record.pick_uncertainty_ms is None:
+            record.pick_uncertainty_ms = float(np.median(np.diff(record.time_ms))) / 2.0
+        record.review_state = "accepted_with_comment" if record.review_comment else "accepted"
+        return True
+
+    def _accept_current_picks(self) -> None:
+        """Accept the current interval and advance to the next receiver depth."""
+
+        row = self.record_list.currentRow()
+        if row < 0:
+            return
+        record = self.records[row]
+        if not self._mark_record_accepted(record):
+            self._load_review_controls(record)
+            self._refresh_list_item(row)
+            return
+
+        self._load_review_controls(record)
+        self._refresh_list_item(row)
+        self._draw_record(preserve_view=True)
+        self.picks_changed.emit()
+        if row < len(self.records) - 1:
+            self.record_list.setCurrentRow(row + 1)
 
     def _prompt_interval_complete(self) -> None:
         """Save the completed interval and advance, or clear it for re-picking."""
@@ -1519,20 +1718,10 @@ class WaveformPickerDialog(QDialog):
             self._select_marker("first_peak", 17)
             return
         if box.clickedButton() is accept_button:
-            if qc.warnings and not record.review_comment:
-                comment, confirmed = QInputDialog.getMultiLineText(
-                    self,
-                    "QC comment required",
-                    "Explain why the observation is accepted despite the QC warning(s):",
-                    "",
-                )
-                if not confirmed or not comment.strip():
-                    record.review_state = "not_reviewed"
-                    self._load_review_controls(record)
-                    self._refresh_list_item(row)
-                    return
-                record.review_comment = comment.strip()
-            record.review_state = "accepted_with_comment" if record.review_comment else "accepted"
+            if not self._mark_record_accepted(record):
+                self._load_review_controls(record)
+                self._refresh_list_item(row)
+                return
             self._load_review_controls(record)
             self._refresh_list_item(row)
             if last_record:
@@ -1647,7 +1836,7 @@ class WaveformPickerDialog(QDialog):
         )
         ax.set_xlabel("Time relative to trigger (ms)")
         ax.set_ylabel("Recorded amplitude")
-        ax.legend(loc="upper right", facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
+        ax.legend(loc="upper right", **self.canvas.legend_kwargs())
         value_parts = []
         for kind in TRACE_PICK_KINDS:
             left = record.get_pick(kind, 17)
@@ -1711,7 +1900,7 @@ class WaveformPickerDialog(QDialog):
         self.qc_summary_label.setStyleSheet(f"font-weight: 700; font-size: 12px; color: {color};")
 
     def _apply_max_peak_zoom(self, record: WaveformRecord) -> None:
-        """Show a 50 ms window centered on the mean left/right maximum peak."""
+        """Show the selected time window centered on the mean maximum peak."""
 
         centers = [record.get_pick("max_peak", channel) for channel in (17, 18)]
         finite_centers = [value for value in centers if value is not None]
@@ -1723,8 +1912,8 @@ class WaveformPickerDialog(QDialog):
         center = float(np.mean(finite_centers))
         full_left = float(record.time_ms[0])
         full_right = float(record.time_ms[-1])
-        left = center - 25.0
-        right = center + 25.0
+        left = center - self.max_peak_half_width_ms
+        right = center + self.max_peak_half_width_ms
         if left < full_left:
             right += full_left - left
             left = full_left
@@ -1781,8 +1970,13 @@ class RayPathMainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        app = QApplication.instance()
+        if app is not None and app.property("dark_mode") is None:
+            apply_application_theme(app, dark_mode=False)
+        self.dark_mode = bool(app.property("dark_mode")) if app is not None else False
         self.project_path: Path | None = None
         self.gru_path: Path | None = None
+        self.gru_pre_trigger_ms: float | None = None
         self.waveform_records: list[WaveformRecord] = []
         self.observation_review: dict[float, dict[str, Any]] = {}
         self.result: InversionResult | None = None
@@ -1792,6 +1986,7 @@ class RayPathMainWindow(QMainWindow):
         self.current_vs30: Vs30Result | None = None
         self.vs30_unavailable_reason: str | None = None
         self.vs30_history: dict[tuple[str, float, float], float] = {}
+        self.picker_half_width_ms = DEFAULT_PICKER_HALF_WIDTH_MS
         self._thread: QThread | None = None
         self._worker: InversionWorker | None = None
         self._dirty = False
@@ -1852,6 +2047,13 @@ class RayPathMainWindow(QMainWindow):
         heading_row.addSpacing(12)
         heading_row.addWidget(subtitle)
         heading_row.addStretch()
+        self.dark_mode_toggle = QCheckBox("Dark mode")
+        self.dark_mode_toggle.setObjectName("themeToggle")
+        self.dark_mode_toggle.setChecked(self.dark_mode)
+        self.dark_mode_toggle.setToolTip("Switch between the default light theme and the dark engineering theme.")
+        self.dark_mode_toggle.toggled.connect(self._theme_changed)
+        heading_row.addWidget(self.dark_mode_toggle)
+        heading_row.addSpacing(12)
         units = QLabel("SI  ·  m  ·  ms  ·  m/s")
         units.setObjectName("unitBadge")
         heading_row.addWidget(units)
@@ -1876,6 +2078,32 @@ class RayPathMainWindow(QMainWindow):
         status.addPermanentWidget(self.rmse_label)
         self.vs30_status_label = QLabel("Vs30: — m/s")
         status.addPermanentWidget(self.vs30_status_label)
+
+    @Slot(bool)
+    def _theme_changed(self, dark_mode: bool) -> None:
+        """Apply the selected theme to Qt widgets and all embedded plots."""
+
+        self.dark_mode = bool(dark_mode)
+        app = QApplication.instance()
+        if app is not None:
+            apply_application_theme(app, self.dark_mode)
+        canvases = (
+            self.velocity_canvas,
+            self.ray_canvas,
+            self.fit_canvas,
+            self.waterfall_canvas,
+            self.vs30_canvas,
+        )
+        for canvas in canvases:
+            canvas.set_dark_mode(self.dark_mode)
+        if self.waveform_records:
+            self._apply_waveform_review_to_input_table()
+        elif self.observation_review:
+            self._apply_saved_review_to_input_table()
+        if self.result is None:
+            self._draw_empty_plots()
+        else:
+            self._draw_results(self.result)
 
     def _build_input_panel(self) -> QWidget:
         panel = QFrame()
@@ -1907,9 +2135,18 @@ class RayPathMainWindow(QMainWindow):
         form.addRow("Arrival estimator", self.estimator_combo)
         layout.addLayout(form)
 
+        waveform_buttons = QHBoxLayout()
         import_button = QPushButton("Import GRU Waveforms…")
         import_button.clicked.connect(self.import_gru)
-        layout.addWidget(import_button)
+        waveform_buttons.addWidget(import_button)
+        self.review_waveforms_button = QPushButton("Return to Waveform Picker…")
+        self.review_waveforms_button.setEnabled(False)
+        self.review_waveforms_button.setToolTip(
+            "Reopen the picker for the currently loaded GRU waveforms."
+        )
+        self.review_waveforms_button.clicked.connect(self.review_waveforms)
+        waveform_buttons.addWidget(self.review_waveforms_button)
+        layout.addLayout(waveform_buttons)
         self.gru_label = QLabel("No GRU source loaded")
         self.gru_label.setWordWrap(True)
         self.gru_label.setObjectName("subtleLabel")
@@ -1929,7 +2166,8 @@ class RayPathMainWindow(QMainWindow):
             ]
         )
         self.input_table.setToolTip(
-            f"GRU arrivals are measured from the trigger after subtracting the {GRU_PRE_TRIGGER_MS:g} ms pre-trigger period."
+            "Arrival times are measured relative to the physical trigger. GRU imports record the applied "
+            "pre-trigger correction in the project audit data."
         )
         self.input_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.input_table.verticalHeader().setDefaultSectionSize(27)
@@ -2148,7 +2386,8 @@ class RayPathMainWindow(QMainWindow):
         self.waveform_records = []
         self.observation_review = {}
         self.gru_path = None
-        self.review_action.setEnabled(False)
+        self.gru_pre_trigger_ms = None
+        self._set_waveform_review_available(False)
         self.gru_label.setText("No GRU source loaded")
         self.input_table.blockSignals(True)
         self.input_table.clearContents()
@@ -2160,6 +2399,12 @@ class RayPathMainWindow(QMainWindow):
         self.extrapolation_weight_slider.setValue(0)
         self._clear_results()
         self.status_label.setText("Ready — import a GRU file or enter observations")
+
+    def _set_waveform_review_available(self, available: bool) -> None:
+        """Keep the menu action and main-interface picker button synchronized."""
+
+        self.review_action.setEnabled(available)
+        self.review_waveforms_button.setEnabled(available)
 
     def _set_input_rows(
         self,
@@ -2234,7 +2479,7 @@ class RayPathMainWindow(QMainWindow):
                 transform=canvas.axes.transAxes,
                 ha="center",
                 va="center",
-                color="#8b949e",
+                color=canvas.muted_color,
             )
             canvas.draw_idle()
         self._draw_waveform_waterfall()
@@ -2244,7 +2489,10 @@ class RayPathMainWindow(QMainWindow):
         """Draw every imported left/right trace at its receiver depth."""
 
         self.waterfall_canvas.clear()
-        self._plot_waveform_waterfall(self.waterfall_canvas.axes, dark_theme=True)
+        self._plot_waveform_waterfall(
+            self.waterfall_canvas.axes,
+            dark_theme=self.waterfall_canvas.dark_mode,
+        )
         self.waterfall_canvas.draw_idle()
 
     def _plot_waveform_waterfall(self, ax: Any, dark_theme: bool = False) -> None:
@@ -2366,6 +2614,9 @@ class RayPathMainWindow(QMainWindow):
             fontsize=8,
             frameon=True,
             ncol=2,
+            facecolor="#161b22" if dark_theme else "#ffffff",
+            edgecolor="#48515c" if dark_theme else "#d0d7de",
+            labelcolor="#c9d1d9" if dark_theme else "#24292f",
         )
 
     def _draw_vs30_analysis(self) -> None:
@@ -2415,7 +2666,7 @@ class RayPathMainWindow(QMainWindow):
                 max(0.0, float(np.min(values_array)) - value_margin),
                 float(np.max(values_array)) + value_margin,
             )
-            ax.legend(facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
+            ax.legend(**self.vs30_canvas.legend_kwargs())
         else:
             ax.text(
                 0.5,
@@ -2424,7 +2675,7 @@ class RayPathMainWindow(QMainWindow):
                 transform=ax.transAxes,
                 ha="center",
                 va="center",
-                color="#8b949e",
+                color=self.vs30_canvas.muted_color,
             )
             ax.set_xlim(0.0, 1.0)
         if self.current_vs30 is not None:
@@ -2634,22 +2885,40 @@ class RayPathMainWindow(QMainWindow):
         except Exception as exc:
             self._show_error("Unable to import GRU file", exc)
 
-    def _load_gru(self, path: Path) -> None:
+    def _load_gru(self, path: Path, pre_trigger_ms: float | None = None) -> bool:
+        """Import a GRU file after explicitly confirming its timing correction."""
+
+        if pre_trigger_ms is None:
+            options = GruImportOptionsDialog(path.name, self)
+            if options.exec() != QDialog.DialogCode.Accepted:
+                return False
+            applied_pre_trigger_ms = options.pre_trigger_ms
+        else:
+            applied_pre_trigger_ms = float(pre_trigger_ms)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            records = parse_gru(path)
+            records = parse_gru(path, pre_trigger_ms=applied_pre_trigger_ms)
             add_suggested_picks(records)
         finally:
             QApplication.restoreOverrideCursor()
-        dialog = WaveformPickerDialog(records, path.name, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+        dialog = WaveformPickerDialog(
+            records,
+            path.name,
+            self,
+            max_peak_half_width_ms=self.picker_half_width_ms,
+        )
+        dialog_result = dialog.exec()
+        self.picker_half_width_ms = dialog.max_peak_half_width_ms
+        if dialog_result != QDialog.DialogCode.Accepted:
+            return False
         self.waveform_records = records
         self.gru_path = path
+        self.gru_pre_trigger_ms = applied_pre_trigger_ms
         self.project_path = None
-        self.review_action.setEnabled(True)
+        self._set_waveform_review_available(True)
         self.gru_label.setText(
-            f"{path.name} — {len(records)} paired seismic records — {GRU_PRE_TRIGGER_MS:g} ms pre-trigger corrected"
+            f"{path.name} — {len(records)} paired seismic records — "
+            f"{applied_pre_trigger_ms:g} ms pre-trigger corrected"
         )
         self._populate_table_from_picks()
         self._clear_results()
@@ -2657,9 +2926,10 @@ class RayPathMainWindow(QMainWindow):
         unreviewed = sum(record.review_state == "not_reviewed" for record in records)
         self.status_label.setText(
             f"Imported {len(records)} GRU records — {rejected} rejected/excluded, {unreviewed} not reviewed — "
-            f"{GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction applied"
+            f"{applied_pre_trigger_ms:g} ms pre-trigger correction applied"
         )
         self._set_dirty(True)
+        return True
 
     def _populate_table_from_picks(self) -> None:
         self.observation_review = {
@@ -2687,6 +2957,11 @@ class RayPathMainWindow(QMainWindow):
         if unreviewed:
             status_parts.append(f"{unreviewed} not reviewed")
         if self.gru_path:
+            applied_pre_trigger_ms = (
+                self.waveform_records[0].pre_trigger_ms
+                if self.waveform_records
+                else self.gru_pre_trigger_ms
+            )
             accepted = sum(
                 record.review_state in ("accepted", "accepted_with_comment")
                 for record in self.waveform_records
@@ -2694,7 +2969,7 @@ class RayPathMainWindow(QMainWindow):
             self.gru_label.setText(
                 f"{self.gru_path.name} — {len(self.waveform_records)} paired records — "
                 f"{accepted} accepted, {rejected} rejected, {unreviewed} not reviewed — "
-                f"{GRU_PRE_TRIGGER_MS:g} ms pre-trigger corrected"
+                f"{applied_pre_trigger_ms:g} ms pre-trigger corrected"
             )
         if status_parts:
             self.status_label.setText("Waveform review: " + "; ".join(status_parts))
@@ -2732,12 +3007,7 @@ class RayPathMainWindow(QMainWindow):
             tooltip += "\nUse Review Waveforms to change waveform-backed picks or review state."
             if record.review_comment:
                 tooltip += f"\nComment: {record.review_comment}"
-            background = {
-                "rejected": QColor("#4a2027"),
-                "not_reviewed": QColor("#3d321b"),
-                "accepted_with_comment": QColor("#173d39"),
-                "accepted": QColor("#17351f"),
-            }.get(record.review_state, QColor("#21262d"))
+            background = self._review_state_background(record.review_state)
             for column in range(self.input_table.columnCount()):
                 item = self.input_table.item(row, column)
                 if item is None:
@@ -2745,6 +3015,7 @@ class RayPathMainWindow(QMainWindow):
                     self.input_table.setItem(row, column, item)
                 item.setToolTip(tooltip)
                 item.setBackground(background)
+                item.setForeground(QColor("#f0f6fc" if self.dark_mode else "#24292f"))
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 font = item.font()
                 font.setStrikeOut(record.is_excluded)
@@ -2772,21 +3043,38 @@ class RayPathMainWindow(QMainWindow):
             )
             if comment:
                 tooltip += f"\nComment: {comment}"
-            background = {
-                "rejected": QColor("#4a2027"),
-                "not_reviewed": QColor("#3d321b"),
-                "accepted_with_comment": QColor("#173d39"),
-                "accepted": QColor("#17351f"),
-            }.get(state, QColor("#21262d"))
+            background = self._review_state_background(state)
             for column in range(self.input_table.columnCount()):
                 item = self.input_table.item(row, column)
                 if item is None:
                     continue
                 item.setToolTip(tooltip)
                 item.setBackground(background)
+                item.setForeground(QColor("#f0f6fc" if self.dark_mode else "#24292f"))
                 font = item.font()
                 font.setStrikeOut(state == "rejected")
                 item.setFont(font)
+
+    def _review_state_background(self, state: str) -> QColor:
+        """Return an accessible review-state fill for the active UI theme."""
+
+        if self.dark_mode:
+            colors = {
+                "rejected": "#4a2027",
+                "not_reviewed": "#3d321b",
+                "accepted_with_comment": "#173d39",
+                "accepted": "#17351f",
+            }
+            fallback = "#21262d"
+        else:
+            colors = {
+                "rejected": "#ffebe9",
+                "not_reviewed": "#fff8c5",
+                "accepted_with_comment": "#ddf4ff",
+                "accepted": "#dafbe1",
+            }
+            fallback = "#f6f8fa"
+        return QColor(colors.get(state, fallback))
 
     @Slot()
     def review_waveforms(self) -> None:
@@ -2805,8 +3093,11 @@ class RayPathMainWindow(QMainWindow):
             self.waveform_records,
             self.gru_path.name if self.gru_path else "project waveforms",
             self,
+            max_peak_half_width_ms=self.picker_half_width_ms,
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        dialog_result = dialog.exec()
+        self.picker_half_width_ms = dialog.max_peak_half_width_ms
+        if dialog_result == QDialog.DialogCode.Accepted:
             self._populate_table_from_picks()
             self._clear_results()
             self._set_dirty(True)
@@ -2851,8 +3142,9 @@ class RayPathMainWindow(QMainWindow):
         self.waveform_records = []
         self.observation_review = {}
         self.gru_path = None
+        self.gru_pre_trigger_ms = None
         self.project_path = None
-        self.review_action.setEnabled(False)
+        self._set_waveform_review_available(False)
         self.gru_label.setText(f"{path.name} — CSV observations")
         self._set_all_pick_rows(rows)
         self._clear_results()
@@ -2860,6 +3152,11 @@ class RayPathMainWindow(QMainWindow):
         self._set_dirty(True)
 
     def _project_payload(self) -> dict[str, Any]:
+        applied_pre_trigger_ms = (
+            self.waveform_records[0].pre_trigger_ms
+            if self.waveform_records
+            else self.gru_pre_trigger_ms
+        )
         if self.waveform_records:
             self.observation_review = {
                 round(record.depth_m, 6): {
@@ -2890,8 +3187,14 @@ class RayPathMainWindow(QMainWindow):
             "schema_version": PROJECT_SCHEMA_VERSION,
             "application_version": APP_VERSION,
             "units": "SI",
-            "gru_pre_trigger_ms": GRU_PRE_TRIGGER_MS,
+            "gru_pre_trigger_ms": applied_pre_trigger_ms,
             "pick_time_reference": "relative_to_trigger",
+            "timing_audit": {
+                "recorded_clock": "GRU sample time",
+                "analysis_clock": "milliseconds relative to physical trigger",
+                "correction": "trigger_relative_ms = recorded_ms - pre_trigger_ms",
+                "pre_trigger_ms": applied_pre_trigger_ms,
+            },
             "qc_configuration": {
                 "method_version": 1,
                 "snr_warning_db": QC_SNR_WARNING_DB,
@@ -2919,7 +3222,16 @@ class RayPathMainWindow(QMainWindow):
                 {
                     "test_number": record.test_number,
                     "depth_m": record.depth_m,
+                    "pre_trigger_ms": record.pre_trigger_ms,
+                    "recorded_time_start_ms": float(record.recorded_time_ms[0]),
+                    "recorded_time_end_ms": float(record.recorded_time_ms[-1]),
+                    "trigger_relative_time_start_ms": float(record.time_ms[0]),
+                    "trigger_relative_time_end_ms": float(record.time_ms[-1]),
+                    "sample_interval_ms": float(np.median(np.diff(record.time_ms))),
+                    # ``picks_ms`` remains as the schema-1-to-5 compatibility alias.
                     "picks_ms": record.picks_ms,
+                    "picks_trigger_relative_ms": record.picks_ms,
+                    "picks_recorded_ms": record.recorded_picks_ms(),
                     "review_state": record.review_state,
                     "review_comment": record.review_comment,
                     "pick_uncertainty_ms": record.pick_uncertainty_ms,
@@ -3042,10 +3354,20 @@ class RayPathMainWindow(QMainWindow):
             self._set_input_rows(rows, "zero_cross" if legacy_kind == "first_cross" else legacy_kind)
         self.waveform_records = []
         self.gru_path = Path(payload["gru_source"]) if payload.get("gru_source") else None
+        raw_pre_trigger = payload.get("gru_pre_trigger_ms", GRU_PRE_TRIGGER_MS)
+        if self.gru_path:
+            self.gru_pre_trigger_ms = float(raw_pre_trigger)
+            if not math.isfinite(self.gru_pre_trigger_ms) or self.gru_pre_trigger_ms < 0.0:
+                raise ValueError("Saved GRU pre-trigger correction is invalid.")
+        else:
+            self.gru_pre_trigger_ms = None
         if self.gru_path and self.gru_path.is_file():
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
-                self.waveform_records = parse_gru(self.gru_path)
+                self.waveform_records = parse_gru(
+                    self.gru_path,
+                    pre_trigger_ms=self.gru_pre_trigger_ms,
+                )
             finally:
                 QApplication.restoreOverrideCursor()
             saved = {
@@ -3054,14 +3376,41 @@ class RayPathMainWindow(QMainWindow):
             }
             for record in self.waveform_records:
                 saved_record = saved.get((record.test_number, record.depth_m), {})
-                loaded_picks = dict(saved_record.get("picks_ms", {}))
+                saved_record_pre_trigger = saved_record.get("pre_trigger_ms")
+                if saved_record_pre_trigger is not None and not math.isclose(
+                    float(saved_record_pre_trigger),
+                    record.pre_trigger_ms,
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                ):
+                    raise ValueError(
+                        f"Saved pre-trigger correction for test {record.test_number} is inconsistent "
+                        "with the project import correction."
+                    )
+                loaded_picks = dict(
+                    saved_record.get("picks_trigger_relative_ms", saved_record.get("picks_ms", {}))
+                )
                 if project_version == 1:
                     # Version 1 stored raw GRU record times and did not account
                     # for the undocumented pre-trigger period.
                     loaded_picks = {
-                        key: (None if value is None else float(value) - GRU_PRE_TRIGGER_MS)
+                        key: (None if value is None else float(value) - self.gru_pre_trigger_ms)
                         for key, value in loaded_picks.items()
                     }
+                if project_version >= 6:
+                    recorded_picks = dict(saved_record.get("picks_recorded_ms", {}))
+                    for key, trigger_value in loaded_picks.items():
+                        recorded_value = recorded_picks.get(key)
+                        if trigger_value is None or recorded_value is None:
+                            continue
+                        expected_recorded = float(trigger_value) + record.pre_trigger_ms
+                        if not math.isclose(
+                            float(recorded_value), expected_recorded, rel_tol=0.0, abs_tol=1e-6
+                        ):
+                            raise ValueError(
+                                f"Saved recorded and trigger-relative picks disagree for test "
+                                f"{record.test_number} ({key})."
+                            )
                 if project_version < 4:
                     for channel in (17, 18):
                         legacy_key = record.pick_key("first_cross", channel)
@@ -3084,7 +3433,7 @@ class RayPathMainWindow(QMainWindow):
                     record.pick_uncertainty_ms = uncertainty if uncertainty > 0.0 else None
             self.gru_label.setText(
                 f"{self.gru_path.name} — {len(self.waveform_records)} paired seismic records — "
-                f"{GRU_PRE_TRIGGER_MS:g} ms pre-trigger corrected"
+                f"{self.gru_pre_trigger_ms:g} ms pre-trigger corrected"
             )
             if project_version < 4:
                 self._populate_table_from_picks()
@@ -3104,7 +3453,7 @@ class RayPathMainWindow(QMainWindow):
         else:
             self.gru_label.setText("Project contains manually entered observations")
             self._apply_saved_review_to_input_table()
-        self.review_action.setEnabled(bool(self.waveform_records))
+        self._set_waveform_review_available(bool(self.waveform_records))
         self._clear_results()
         self.vs30_history = {
             (
@@ -3160,6 +3509,8 @@ class RayPathMainWindow(QMainWindow):
                         "Vs30 Extrapolation Weight Factor",
                         "Vs30 Extrapolated Thickness (m)",
                         "Vs30 Extrapolated Velocity (m/s)",
+                        "Applied GRU Pre-Trigger Correction (ms)",
+                        "Arrival-Time Reference",
                         "Application Version",
                         "Project Schema Version",
                     ]
@@ -3195,6 +3546,8 @@ class RayPathMainWindow(QMainWindow):
                                 if self.current_vs30 is None or self.current_vs30.extrapolated_velocity_mps is None
                                 else f"{self.current_vs30.extrapolated_velocity_mps:.3f}"
                             ),
+                            "" if self.gru_pre_trigger_ms is None else f"{self.gru_pre_trigger_ms:.3f}",
+                            "relative to physical trigger",
                             APP_VERSION,
                             PROJECT_SCHEMA_VERSION,
                         ]
@@ -3217,6 +3570,8 @@ class RayPathMainWindow(QMainWindow):
                 [
                     "Test",
                     "Receiver Depth (m)",
+                    "Applied Pre-Trigger Correction (ms)",
+                    "Pick Time Reference",
                     "Review State",
                     "Included in Inversion",
                     "Pick Uncertainty (ms)",
@@ -3254,6 +3609,8 @@ class RayPathMainWindow(QMainWindow):
                     [
                         record.test_number,
                         f"{record.depth_m:.4f}",
+                        f"{record.pre_trigger_ms:.3f}",
+                        "relative to physical trigger",
                         REVIEW_LABELS.get(record.review_state, record.review_state),
                         "No" if record.is_excluded else "Yes",
                         number(record.pick_uncertainty_ms),
@@ -3284,6 +3641,8 @@ class RayPathMainWindow(QMainWindow):
                         [
                             "",
                             f"{depth:.4f}",
+                            "" if self.gru_pre_trigger_ms is None else f"{self.gru_pre_trigger_ms:.3f}",
+                            "relative to physical trigger",
                             REVIEW_LABELS.get(state, state),
                             "No" if state == "rejected" else "Yes",
                             number(metadata.get("pick_uncertainty_ms")),
@@ -3716,7 +4075,22 @@ class RayPathMainWindow(QMainWindow):
             [p("Smoothing / regularisation"), p(f"{self.reg_slider.value() / 100.0:.2f}")],
             [p("Vs30 extrapolation weighting"), p(f"{self._extrapolation_weight_factor():.2f}")],
             [p("Deepest receiver"), p(f"{selected_result.depths_m[-1]:.2f} m")],
-            [p("GRU pre-trigger correction"), p(f"{GRU_PRE_TRIGGER_MS:.1f} ms")],
+            [
+                p("GRU pre-trigger correction"),
+                p(
+                    f"{self.waveform_records[0].pre_trigger_ms:.3f} ms"
+                    if self.waveform_records
+                    else (
+                        f"{self.gru_pre_trigger_ms:.3f} ms (saved source unavailable)"
+                        if self.gru_pre_trigger_ms is not None
+                        else "Not applicable — manual/CSV observations"
+                    )
+                ),
+            ],
+            [
+                p("Arrival-time reference"),
+                p("Milliseconds relative to physical trigger; recorded-clock picks retained in project audit data"),
+            ],
         ]
         if self.observation_review:
             accepted_count, rejected_count, unreviewed_count = self._review_counts()
@@ -4240,23 +4614,50 @@ class RayPathMainWindow(QMainWindow):
         ax.set_xlabel("Vs (m/s)")
         ax.set_ylabel("Depth (m)")
         ax.set_ylim(z[-1], 0.0)
-        finite = np.concatenate([raw[np.isfinite(raw)], *all_velocities]) if all_velocities else raw[np.isfinite(raw)]
-        if finite.size:
-            ax.set_xlim(max(0.0, float(np.min(finite)) * 0.8), float(np.max(finite)) * 1.15)
-        ax.legend(facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
+        ax.set_xlim(0.0, VELOCITY_PROFILE_DISPLAY_MAX)
+        ax.set_xticks(np.arange(0.0, VELOCITY_PROFILE_DISPLAY_MAX + 1.0, 100.0))
+        raw_above_limit = int(np.count_nonzero(np.isfinite(raw) & (raw > VELOCITY_PROFILE_DISPLAY_MAX)))
+        model_above_limit = sum(
+            int(np.count_nonzero(values > VELOCITY_PROFILE_DISPLAY_MAX))
+            for values in all_velocities
+        )
+        if raw_above_limit or model_above_limit:
+            clipped_parts = []
+            if raw_above_limit:
+                clipped_parts.append(f"{raw_above_limit} raw")
+            if model_above_limit:
+                clipped_parts.append(f"{model_above_limit} modeled")
+            ax.text(
+                0.99,
+                0.01,
+                f"Values above {VELOCITY_PROFILE_DISPLAY_MAX:.0f} m/s outside view: "
+                + ", ".join(clipped_parts),
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                color="#d29922",
+                fontsize=8,
+                bbox={
+                    "facecolor": self.velocity_canvas.figure_color,
+                    "edgecolor": "#6e5b25",
+                    "alpha": 0.9,
+                    "pad": 3,
+                },
+            )
+        ax.legend(**self.velocity_canvas.legend_kwargs())
         self.velocity_canvas.draw_idle()
 
         ax = self.ray_canvas.axes
         self.ray_canvas.clear()
         x_offset = self.offset_spin.value()
         for boundary in edges:
-            ax.hlines(boundary, 0.0, x_offset, color="#48515c", linewidth=0.7, alpha=0.7)
+            ax.hlines(boundary, 0.0, x_offset, color=self.ray_canvas.grid_color, linewidth=0.7, alpha=0.7)
         color_map = colormaps["viridis"]
         for i, segments in enumerate(result.ray_x_segments):
             ray_x = np.r_[0.0, np.cumsum(segments)]
             ray_z = edges[: i + 2]
             ax.plot(ray_x, ray_z, color=color_map((i + 1) / len(result.ray_x_segments)), linewidth=1.25, alpha=0.9)
-        ax.axvline(x_offset, color="#f0f6fc", linewidth=1.8, label="Borehole")
+        ax.axvline(x_offset, color=self.ray_canvas.foreground_color, linewidth=1.8, label="Borehole")
         ax.scatter([0.0], [0.0], marker="*", s=110, color="#ffcc66", zorder=5, label="Source")
         ax.scatter(np.full_like(z, x_offset), z, marker="<", s=28, color="#58a6ff", zorder=5, label="Receivers")
         ax.set_title(f"Snell's-law rays — {PICK_LABELS.get(selected_kind, selected_kind)} model")
@@ -4266,7 +4667,7 @@ class RayPathMainWindow(QMainWindow):
         margin = max(x_offset * 0.08, 0.1)
         ax.set_xlim(-margin, x_offset + margin)
         ax.set_aspect("auto")
-        ax.legend(facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
+        ax.legend(**self.ray_canvas.legend_kwargs())
         self.ray_canvas.draw_idle()
 
         ax = self.fit_canvas.axes
@@ -4306,7 +4707,7 @@ class RayPathMainWindow(QMainWindow):
         ax.set_xlabel("Arrival time after trigger (ms)")
         ax.set_ylabel("Depth (m)")
         ax.set_ylim(z[-1], 0.0)
-        ax.legend(facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
+        ax.legend(**self.fit_canvas.legend_kwargs())
         self.fit_canvas.draw_idle()
         self._draw_vs30_analysis()
 
@@ -4352,15 +4753,78 @@ class RayPathMainWindow(QMainWindow):
             "<p>SI-only SCPT arrival-time picking and regularised shear-wave velocity inversion.</p>"
             "<p>The direct-ray forward model solves Snell's-law refraction with SciPy Brent root finding; "
             "layer velocities are estimated with bounded L-BFGS-B least squares.</p>"
-            f"<p>GRU imports apply the undocumented {GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction before picking "
-            "or velocity calculation.</p>"
+            f"<p>GRU imports require confirmation of an undocumented pre-trigger correction; the default is "
+            f"{GRU_PRE_TRIGGER_MS:g} ms. Recorded and trigger-relative pick times are retained for audit.</p>"
             "<p>Automatic waveform markers and QC warnings are review aids. Rejection is always an explicit "
             "analyst decision; recorded uncertainty does not yet weight the inversion.</p>",
         )
 
 
-def application_stylesheet() -> str:
-    """Return the complete dark engineering UI stylesheet."""
+def application_stylesheet(dark_mode: bool = False) -> str:
+    """Return the complete light or dark engineering UI stylesheet."""
+
+    if not dark_mode:
+        return """
+        QMainWindow, QDialog, QWidget {
+            background-color: #f6f8fa;
+            color: #24292f;
+            font-family: "Segoe UI";
+            font-size: 10pt;
+        }
+        QMenuBar { background: #ffffff; border-bottom: 1px solid #d0d7de; }
+        QMenuBar::item:selected, QMenu::item:selected { background: #147d75; color: white; }
+        QMenu { background: #ffffff; border: 1px solid #d0d7de; }
+        QFrame#panel { background: #ffffff; border: 1px solid #d0d7de; border-radius: 7px; }
+        QLabel#appTitle { color: #1f2328; font-size: 20pt; font-weight: 700; }
+        QLabel#sectionTitle { color: #147d75; font-size: 10pt; font-weight: 700; letter-spacing: 1px; }
+        QLabel#minorTitle { color: #1f2328; font-weight: 600; margin-top: 5px; }
+        QLabel#subtleLabel { color: #57606a; }
+        QLabel#accentLabel { color: #0f6f68; font-weight: 600; }
+        QLabel#pickValuesLabel {
+            color: #1f2328; font-size: 11pt; font-weight: 700;
+            background: #ffffff; border: 1px solid #d0d7de; border-radius: 4px;
+            padding: 7px 9px;
+        }
+        QLabel#vs30Value { color: #1f2328; font-size: 20pt; font-weight: 700; }
+        QLabel#unitBadge { background: #ddf4ff; color: #0550ae; border: 1px solid #b6d7f2; border-radius: 10px; padding: 5px 10px; }
+        QCheckBox#themeToggle { color: #24292f; font-weight: 600; padding: 4px 6px; }
+        QPushButton {
+            background: #ffffff; color: #24292f; border: 1px solid #8c959f;
+            border-radius: 5px; padding: 6px 10px;
+        }
+        QPushButton:hover { background: #f3f4f6; border-color: #57606a; }
+        QPushButton:pressed { background: #eaeef2; }
+        QPushButton:disabled { color: #8c959f; border-color: #d0d7de; background: #f6f8fa; }
+        QPushButton#primaryButton { color: white; background: #1a7f37; border: 1px solid #116329; font-size: 11pt; font-weight: 700; }
+        QPushButton#primaryButton:hover { background: #2da44e; }
+        QPushButton#acceptCurrentPicksButton {
+            color: white; background: #147d75; border: 1px solid #0f6f68;
+            font-size: 10.5pt; font-weight: 700; padding: 9px 12px;
+        }
+        QPushButton#acceptCurrentPicksButton:hover { background: #198f85; }
+        QLineEdit, QPlainTextEdit, QDoubleSpinBox, QComboBox {
+            background: #ffffff; color: #24292f; border: 1px solid #8c959f;
+            border-radius: 4px; padding: 5px;
+        }
+        QTableWidget, QListWidget {
+            background: #ffffff; alternate-background-color: #f6f8fa; color: #24292f;
+            border: 1px solid #d0d7de; gridline-color: #d8dee4; selection-background-color: #b6d7f2;
+            selection-color: #24292f;
+        }
+        QHeaderView::section { background: #eaeef2; color: #24292f; border: 0; border-right: 1px solid #d0d7de; padding: 6px; }
+        QTabWidget::pane { border: 1px solid #d0d7de; background: #ffffff; }
+        QTabBar::tab { background: #f6f8fa; color: #57606a; padding: 8px 14px; border: 1px solid #d0d7de; }
+        QTabBar::tab:selected { color: #1f2328; background: #ffffff; border-bottom: 2px solid #147d75; }
+        QGroupBox { border: 1px solid #d0d7de; border-radius: 5px; margin-top: 9px; padding-top: 7px; }
+        QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #57606a; }
+        QSlider::groove:horizontal { height: 5px; background: #d0d7de; border-radius: 2px; }
+        QSlider::handle:horizontal { background: #147d75; width: 15px; margin: -5px 0; border-radius: 7px; }
+        QStatusBar { background: #ffffff; border-top: 1px solid #d0d7de; color: #57606a; }
+        QSplitter::handle { background: #eaeef2; width: 7px; }
+        QScrollBar:vertical { background: #f6f8fa; width: 11px; }
+        QScrollBar::handle:vertical { background: #afb8c1; min-height: 24px; border-radius: 5px; }
+        QToolTip { color: #24292f; background: #ffffff; border: 1px solid #8c959f; }
+        """
 
     return """
     QMainWindow, QDialog, QWidget {
@@ -4394,6 +4858,14 @@ def application_stylesheet() -> str:
     QPushButton:disabled { color: #6e7681; border-color: #30363d; }
     QPushButton#primaryButton { background: #238636; border: 1px solid #2ea043; font-size: 11pt; font-weight: 700; }
     QPushButton#primaryButton:hover { background: #2ea043; }
+    QPushButton#acceptCurrentPicksButton {
+        background: #167c73;
+        border: 1px solid #2fb7a8;
+        font-size: 10.5pt;
+        font-weight: 700;
+        padding: 9px 12px;
+    }
+    QPushButton#acceptCurrentPicksButton:hover { background: #1f9186; }
     QLineEdit, QPlainTextEdit, QDoubleSpinBox, QComboBox {
         background: #0d1117; color: #f0f6fc; border: 1px solid #30363d;
         border-radius: 4px; padding: 5px;
@@ -4416,6 +4888,47 @@ def application_stylesheet() -> str:
     QScrollBar::handle:vertical { background: #30363d; min-height: 24px; border-radius: 5px; }
     QToolTip { color: #f0f6fc; background: #21262d; border: 1px solid #48515c; }
     """
+
+
+def application_palette(dark_mode: bool = False) -> QPalette:
+    """Build a Fusion palette matching the selected application theme."""
+
+    palette = QPalette()
+    if dark_mode:
+        colors = {
+            QPalette.ColorRole.Window: "#0d1117",
+            QPalette.ColorRole.WindowText: "#c9d1d9",
+            QPalette.ColorRole.Base: "#0d1117",
+            QPalette.ColorRole.AlternateBase: "#111820",
+            QPalette.ColorRole.Text: "#c9d1d9",
+            QPalette.ColorRole.Button: "#21262d",
+            QPalette.ColorRole.ButtonText: "#f0f6fc",
+            QPalette.ColorRole.Highlight: "#1f6feb",
+            QPalette.ColorRole.HighlightedText: "#ffffff",
+        }
+    else:
+        colors = {
+            QPalette.ColorRole.Window: "#f6f8fa",
+            QPalette.ColorRole.WindowText: "#24292f",
+            QPalette.ColorRole.Base: "#ffffff",
+            QPalette.ColorRole.AlternateBase: "#f6f8fa",
+            QPalette.ColorRole.Text: "#24292f",
+            QPalette.ColorRole.Button: "#ffffff",
+            QPalette.ColorRole.ButtonText: "#24292f",
+            QPalette.ColorRole.Highlight: "#147d75",
+            QPalette.ColorRole.HighlightedText: "#ffffff",
+        }
+    for role, color in colors.items():
+        palette.setColor(role, QColor(color))
+    return palette
+
+
+def apply_application_theme(app: QApplication, dark_mode: bool = False) -> None:
+    """Apply and publish the active application theme."""
+
+    app.setProperty("dark_mode", bool(dark_mode))
+    app.setPalette(application_palette(dark_mode))
+    app.setStyleSheet(application_stylesheet(dark_mode))
 
 
 def run_self_test() -> int:
@@ -4455,16 +4968,7 @@ def main() -> int:
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("RayPath SCPT")
     app.setStyle("Fusion")
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor("#0d1117"))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor("#c9d1d9"))
-    palette.setColor(QPalette.ColorRole.Base, QColor("#0d1117"))
-    palette.setColor(QPalette.ColorRole.Text, QColor("#c9d1d9"))
-    palette.setColor(QPalette.ColorRole.Button, QColor("#21262d"))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#f0f6fc"))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor("#1f6feb"))
-    app.setPalette(palette)
-    app.setStyleSheet(application_stylesheet())
+    apply_application_theme(app, dark_mode=False)
     window = RayPathMainWindow()
     window.show()
     return app.exec()
