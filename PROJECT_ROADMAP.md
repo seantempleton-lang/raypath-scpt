@@ -61,7 +61,54 @@ Completed on 5 August 2026 (WP-02A — pre-trigger timing auditability):
 - added the applied correction and arrival-time reference to PDF and CSV outputs; and
 - retained migration support for project schemas 1 through 5.
 
-The next active item is WP-02B: capture source/receiver survey geometry and use corrected receiver coordinates.
+Completed on 5 August 2026 (WP-02B — survey geometry and corrected receiver coordinates):
+
+- updated the application to `0.5.0-alpha.1` and project schema 7;
+- added a Survey Geometry & Cone Deviation editor for offset uncertainty, coordinate system, datum, source and
+  receiver-reference elevations, depth reference, rod/vertical depth basis, source/block/strike/receiver bearings,
+  notes, and interval inclination/azimuth;
+- calculated corrected vertical depths and plan receiver coordinates at every observation;
+- imported GRU channels #30/#31 as signed X/Y cone inclination, integrated the dense samples into an equivalent
+  inclination for every seismic interval, and applied the resulting vertical-depth correction without inventing
+  an unrecorded global deviation azimuth;
+- extended the Snell's-law forward model and inversion to use a receiver-specific horizontal offset at every depth;
+- added advisory checks for the typical 1–3 m offset, missing survey fields, source-block perpendicularity,
+  opposing strike directions, missing deviation azimuth, and invalid corrected depths;
+- invalidated model results whenever offset, depth, or geometry inputs change;
+- added corrected receiver paths to visualisations and geometry schedules to project, CSV, and PDF outputs; and
+- retained migration support for project schemas 1 through 6 using explicit nominal-geometry warnings.
+
+Completed on 5 August 2026 (WP-03A — standards-facing TS 1170.5:2025 Method 1 Vs30):
+
+- updated the application to `0.6.0-alpha.1` and project schema 8;
+- added a separate audited Method 1 calculation for direct SCPT/downhole Vs measurements to at least 25 m;
+- implemented the prescribed 0–3 m shallow adjustment using the depth-average measured from 2.5–3.5 m;
+- extended the last measured layer to 30 m where required and clipped deeper profiles exactly at 30 m;
+- added central, lower (`Vs30 / 1.05`), and upper (`1.05 × Vs30`) results with numerical Vs30-band screening;
+- exposed raw and standards-adjusted Vs30, measured/extended thickness, slow-profile screening, and method notes;
+- separated the pre-existing weighted extrapolation into a persistently labelled experimental sensitivity control;
+- added Method 1 audit fields to project files, CSV exports, the application view, status summaries, and PDF reports; and
+- added backend and offscreen-GUI regression tests covering depth limits, shallow adjustment, extrapolation,
+  uncertainty bounds, numerical-band crossings, slow upper profiles, and isolation from experimental weighting.
+
+Completed on 5 August 2026 (WP-04 — depth-aware regularisation and quantified uncertainty):
+
+- updated the application to `0.7.0-alpha.1` and project schema 9;
+- replaced index-based smoothing with a depth-aware, physically scaled log-velocity derivative operator;
+- added per-arrival one-sigma uncertainty weights, transparent QC-derived defaults, and analyst override;
+- added linear and Huber losses, standardised residuals, leverage/influence diagnostics, resolution indicators,
+  velocity-bound flags, and separate data and regularisation costs;
+- added automatic L-curve regularisation selection while retaining manual smoothing control;
+- added seeded pick-time perturbation ensembles with velocity and Method 1 Vs30 confidence intervals;
+- made ensembles opt-in for responsive interpretation, with Off, 20-model preliminary preview, 200-model final
+  report, and custom presets; outputs below 100 models are explicitly labelled preliminary;
+- exposed uncertainty bars, velocity envelopes, diagnostic flags, settings, and costs in the UI, project, CSV,
+  and PDF outputs; and
+- added numerical, ensemble-repeatability, project-migration, worker, and report regression coverage.
+
+The next active item is WP-05: add comparator interpretations and geological constraints. WP-03 Method 2 remains
+a later extension for partially measured profiles; Method 3 remains deferred until its supporting inputs and
+provenance can be represented correctly.
 
 ## 1. Purpose
 
@@ -114,6 +161,10 @@ Implemented:
 - Preservation of original recorded time and corrected trigger-relative time for every waveform.
 - Schema-6 timing audit data including the applied correction, time bounds, sample interval, and both time
   references for every pick.
+- Schema-7 survey geometry including datum, depth basis, source/receiver orientation, interval deviation, and
+  calculated receiver coordinates.
+- Automatic GRU #30/#31 cone-tilt import, receiver-interval vertical projection, and an explicit warning that
+  horizontal deviation requires a known inclinometer-axis orientation/azimuth.
 - Validation that imported time arrays increase monotonically and span the configured trigger time.
 - Editable manual input table for depth and four arrival interpretations: first peak/trough, pair crossover,
   experimental individual zero crossing, and experimental maximum peak.
@@ -125,7 +176,8 @@ Implemented:
 Current limitations:
 
 - There is no raw-file hash, imported-file manifest, or project change history.
-- Instrument identity, calibration, operator, test date, site coordinates, source orientation, inclination, and depth datum are not captured in a structured project metadata model.
+- Instrument identity, calibration, operator, test date, and site location coordinates are not yet captured in a
+  broader investigation metadata model; survey geometry and coordinate/datum names are captured in schema 7.
 
 ### 3.3 Waveform picker
 
@@ -163,7 +215,8 @@ Current limitations:
   sufficiently broad labelled dataset or independently validated.
 - One uncertainty value applies to the accepted arrival at a depth; separate uncertainty values for every
   comparison pick are not implemented.
-- Recorded uncertainty is audit information only and does not yet weight the inversion; that is part of WP-04.
+- The same recorded uncertainty currently weights all arrival definitions at a depth; pick-definition-specific
+  uncertainty is not yet implemented.
 - Repeated impacts at the same depth cannot yet be retained individually and stacked.
 
 ### 3.4 Numerical backend
@@ -186,12 +239,15 @@ Implemented:
 Current limitations:
 
 - The model assumes horizontal, laterally homogeneous layers and a direct arrival. It does not model dipping layers, lateral variation, anisotropy, head waves, converted waves, or complex non-direct first arrivals.
-- Source and receiver geometry uses horizontal offset and nominal receiver depth only.
+- Corrected plan coordinates are reduced to radial source-to-receiver offset for the horizontally layered 1D model;
+  the model does not represent a genuinely three-dimensional ray path, lateral variation, or azimuthal anisotropy.
 - One velocity parameter is assigned to every receiver interval, which can imply more subsurface resolution than the observations support.
-- The regularisation curvature uses unscaled array differences. Its physical effect therefore depends on receiver spacing when intervals are non-uniform.
-- The regularisation slider is an empirical trade-off control, not a physical soil property, and is not selected by an objective criterion.
-- All observations receive equal weight. Pick uncertainty and waveform quality do not enter the inversion.
-- There is no robust loss, outlier diagnostic, parameter-resolution estimate, covariance result, bootstrap ensemble, or confidence interval.
+- The regularisation factor remains a dimensionless modelling trade-off, not a physical soil property; automatic
+  L-curve selection is an objective aid rather than proof of a uniquely correct value.
+- Linearised resolution, leverage, and influence measures are diagnostics and should not be interpreted as a full
+  posterior covariance analysis.
+- Pick-time ensembles represent recorded arrival uncertainty only; they do not quantify structural uncertainty
+  from the one-dimensional horizontal-layer assumption, arrival-definition choice, or interpreted layer geometry.
 - No alternative slope-based or geological-layer interpretation is calculated for independent comparison.
 
 ### 3.5 Visualisation and results
@@ -205,11 +261,12 @@ Implemented:
 - Comparison of all available pick-derived velocity models.
 - User-selectable light and dark interface themes, with light mode as the application default.
 - Results table with layer depths, velocity, and fitting error.
-- Convergence and RMSE reporting in the status bar.
+- Convergence, raw and weighted RMSE, data and regularisation costs, standardised residuals, resolution, leverage,
+  influence, outlier, and velocity-bound reporting.
+- Selected-model 95% velocity envelopes and arrival-time uncertainty bars.
 
 Current limitations:
 
-- The model plot has no uncertainty envelope or depth-resolution indicator.
 - There is no corrected vertical travel-time plot or slope-method interpretation.
 - CPT stratigraphy and user-defined geological boundaries cannot be overlaid or used as model constraints.
 - Rejected waveform records are visibly excluded and omitted at the next inversion, but plot-based toggling is
@@ -225,15 +282,15 @@ Implemented:
 - Recalculation at different smoothing settings.
 - Extrapolation from profiles reaching at least 25 m.
 - An experimental 0.25-to-4.0 slider that changes the shallower/deeper weighting used to estimate the missing 25-to-30 m interval.
+- A separate TS 1170.5:2025 Method 1 result with the prescribed shallow treatment, last-layer extension, 5% bounds,
+  numerical-band screening, and a seeded pick-time ensemble interval.
 
 Current limitations:
 
-- The weighted harmonic-mean extrapolation is not the TS 1170.5:2025 Method 1 procedure.
-- TS Method 1 extends the last measured layer to 30 m when its depth requirements are met.
-- The required or recommended treatment of the 0-to-3 m portion of an SCPT/downhole profile is not implemented in a standards-facing calculation.
-- The prescribed method-dependent Vs30 uncertainty bounds are not calculated.
-- No site-class boundary crossing or multi-class envelope warning is provided.
-- The sensitivity slider could be mistaken for a standards-defined weighting factor unless it is explicitly separated from the primary result.
+- Method 2 for partially measured profiles is not implemented.
+- Numerical Vs30 bands are screening information only and are not a final TS site classification.
+- The pick-time ensemble interval is distinct from the prescribed Method 1 5% bounds and does not include every
+  source of model or field uncertainty.
 
 ### 3.7 PDF reporting and branding
 
@@ -248,8 +305,8 @@ Implemented:
 
 Current limitations:
 
-- The report does not yet provide a complete data-quality schedule, exclusions log, uncertainty statement, standards method/edition declaration, reviewer sign-off, or model-applicability statement.
-- Experimental and standards-facing Vs30 results are not yet clearly separated.
+- The report provides QC, exclusions, calculation settings, uncertainty, and standards-method summaries, but does
+  not yet provide complete project/equipment metadata, reviewer sign-off, or a controlled model-applicability statement.
 - The report cannot establish reproducibility through a raw-file hash, software build identifier, calculation configuration, or complete audit trail.
 
 ## 4. Governing development principles
@@ -386,8 +443,9 @@ remain outstanding.
 
 **Dependencies:** WP-00. Coordinate with WP-01 project-schema changes.
 
-**Status:** In progress. Steps 1 through 3 are complete in schema 6. Step 4 is reserved for future formats.
-Steps 5 through 7 form WP-02B and are the next active implementation scope.
+**Status:** Substantially complete. Steps 1 through 3 and 5 through 7 are implemented in schema 7. Step 4 is
+reserved for a future raw format that provides a trigger channel or calibration record and is not a blocker for
+the current GRU workflow.
 
 ### WP-03 — Implement standards-facing Vs30 methods
 
@@ -418,6 +476,10 @@ Steps 5 through 7 form WP-02B and are the next active implementation scope.
 
 **Dependencies:** WP-00. Benefits from WP-02 geometry and trigger metadata.
 
+**Status:** WP-03A (Method 1) complete in schema 8. Method 2 is deferred to a later sub-feature and Method 3 remains
+intentionally out of scope. Numerical Vs30 bands are screening information only; final TS site classification remains
+dependent on the standard's additional soil, rock, and geotechnical criteria.
+
 ### WP-04 — Improve inversion regularisation and uncertainty
 
 **Objective:** Make the smooth model less dependent on sampling geometry and quantify the confidence justified by the observations.
@@ -444,6 +506,9 @@ Steps 5 through 7 form WP-02B and are the next active implementation scope.
 - Bound-active, poorly resolved, or outlier-sensitive intervals are visibly flagged.
 
 **Dependencies:** WP-01 for pick uncertainties and QC. WP-00 for numerical regression coverage.
+
+**Status:** Complete in schema 9. The implemented ensemble quantifies pick-time uncertainty; broader structural and
+interpretive uncertainty remains explicit work for WP-05 and validation work for WP-08.
 
 ### WP-05 — Add comparator interpretations and geological constraints
 
@@ -631,7 +696,7 @@ Steps 5 through 7 form WP-02B and are the next active implementation scope.
 
 ## 7. Recommended immediate development sequence
 
-The next implementation cycle should be limited to the following sequence:
+The next implementation cycle should follow this sequence:
 
 1. **WP-00 baseline tests and versioning — substantially complete.** Visual references and CI integration remain.
 2. **WP-01 pick terminology migration — complete.** The schema-4 picker distinguishes pair crossover from
@@ -640,12 +705,16 @@ The next implementation cycle should be limited to the following sequence:
    comments, uncertainty, exclusions, and report schedules are implemented in schema 5.
 4. **WP-02 pre-trigger auditability — complete.** The correction is confirmed at import and both recorded and
    trigger-relative clocks are retained in schema 6.
-5. **WP-02 geometry auditability.** Capture source/receiver survey metadata and use corrected coordinates where
-   inclination data are supplied.
-6. **WP-03 TS Method 1.** Implement last-layer extension, shallow adjustment, and 5% bounds.
-7. **Report changes.** Clearly separate standards-facing and experimental outputs.
+5. **WP-02 geometry auditability — complete.** Schema 7 captures survey metadata and the inversion uses corrected
+   vertical depths and receiver-specific offsets.
+6. **WP-03 TS Method 1 — complete.** Schema 8 implements last-layer extension, shallow adjustment, and 5% bounds.
+7. **WP-04 regularisation and uncertainty — complete.** Schema 9 adds depth-aware smoothing, weighted/robust
+   inversion, L-curve selection, diagnostics, and repeatable velocity/Vs30 ensembles.
+8. **WP-05 comparator interpretations — next.** Add corrected-time and slope-method interpretations, then
+   user-defined/geological-layer constraints.
 
-Completion of these seven items defines Milestone M1. Depth-aware regularisation and ensemble uncertainty should begin only after the accepted arrival-time data model is stable.
+WP-05 is now the next engineering-development package. Packaging remains deferred until the calculation and
+validation workflow is substantially stable.
 
 ## 8. Release gates
 

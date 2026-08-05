@@ -18,14 +18,21 @@ from PySide6.QtWidgets import QApplication
 
 from raypath_scpt import (
     APP_VERSION,
+    DeviationPoint,
     GruImportOptionsDialog,
+    InversionResult,
+    InversionBatchResult,
+    InversionWorker,
     PICK_SEQUENCE,
     PROJECT_SCHEMA_VERSION,
     RayPathMainWindow,
+    SurveyGeometry,
+    SurveyGeometryDialog,
     WaveformPickerDialog,
     add_suggested_picks,
     apply_application_theme,
     parse_gru,
+    forward_model,
 )
 
 
@@ -126,6 +133,122 @@ class ProjectStateTests(unittest.TestCase):
             window._set_dirty(False)
             window.close()
 
+    def test_ts_method1_is_primary_and_experimental_weighting_is_isolated(self) -> None:
+        window = RayPathMainWindow()
+        try:
+            depths = np.asarray([3.5, 10.0, 20.0, 25.0])
+            velocities = np.asarray([160.0, 210.0, 280.0, 360.0])
+            count = depths.size
+            result = InversionResult(
+                depths_m=depths,
+                thicknesses_m=np.diff(np.r_[0.0, depths]),
+                velocities_mps=velocities,
+                observed_times_s=np.linspace(0.02, 0.10, count),
+                calculated_times_s=np.linspace(0.02, 0.10, count),
+                residuals_s=np.zeros(count),
+                ray_parameters=np.zeros(count),
+                ray_x_segments=[np.zeros(index + 1) for index in range(count)],
+                receiver_offsets_m=np.full(count, 2.4),
+                rmse_s=0.0,
+                success=True,
+                message="Synthetic GUI regression",
+                iterations=1,
+            )
+            window.comparison_results = {"first_peak": result}
+            window._update_all_vs30_results(record_history=True)
+            primary_neutral = window.comparison_vs30["first_peak"]
+            experimental_neutral = window.comparison_experimental_vs30["first_peak"]
+
+            window.extrapolation_weight_slider.blockSignals(True)
+            window.extrapolation_weight_slider.setValue(100)
+            window.extrapolation_weight_slider.blockSignals(False)
+            window._update_all_vs30_results(record_history=False)
+            primary_deep = window.comparison_vs30["first_peak"]
+            experimental_deep = window.comparison_experimental_vs30["first_peak"]
+
+            self.assertAlmostEqual(primary_neutral.value_mps, primary_deep.value_mps, places=12)
+            self.assertNotAlmostEqual(experimental_neutral.value_mps, experimental_deep.value_mps, places=6)
+            self.assertEqual(primary_deep.uncertainty_factor, 0.05)
+            self.assertIn("TS 1170.5:2025 Method 1", window._project_payload()["vs30_primary_method"])
+        finally:
+            window._set_dirty(False)
+            window.close()
+
+    def test_wp04_settings_round_trip_and_worker_returns_repeatable_ensemble(self) -> None:
+        source = RayPathMainWindow()
+        loaded = RayPathMainWindow()
+        try:
+            source.auto_regularization_check.setChecked(True)
+            source.robust_loss_combo.setCurrentIndex(source.robust_loss_combo.findData("huber"))
+            source.manual_uncertainty_spin.setValue(0.75)
+            source.ensemble_size_spin.setValue(6)
+            source.uncertainty_seed_spin.setValue(24680)
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "wp04_settings.rpscpt"
+                path.write_text(json.dumps(source._project_payload()), encoding="utf-8")
+                loaded._load_project(path)
+
+            self.assertTrue(loaded.auto_regularization_check.isChecked())
+            self.assertEqual(loaded.robust_loss_combo.currentData(), "huber")
+            self.assertAlmostEqual(loaded.manual_uncertainty_spin.value(), 0.75)
+            self.assertEqual(loaded.ensemble_size_spin.value(), 6)
+            self.assertEqual(loaded.ensemble_preset_combo.currentData(), -1)
+            self.assertEqual(loaded.uncertainty_seed_spin.value(), 24680)
+
+            depths = np.asarray([3.5, 7.0, 11.0, 16.0, 21.0, 25.0])
+            velocities = np.asarray([170.0, 195.0, 225.0, 260.0, 300.0, 350.0])
+            times, _ = forward_model(np.diff(np.r_[0.0, depths]), velocities, 2.4)
+            worker = InversionWorker(
+                depths,
+                {"crossover": times},
+                2.4,
+                np.full(depths.size, 2.4),
+                0.35,
+                np.full(depths.size, 0.0002),
+                "huber",
+                "crossover",
+                True,
+                6,
+                24680,
+            )
+            batches = []
+            failures = []
+            worker.finished.connect(batches.append)
+            worker.failed.connect(lambda message, detail: failures.append((message, detail)))
+            worker.run()
+
+            self.assertFalse(failures)
+            self.assertEqual(len(batches), 1)
+            self.assertIsInstance(batches[0], InversionBatchResult)
+            self.assertIn("crossover", batches[0].uncertainty_results)
+            self.assertEqual(batches[0].uncertainty_results["crossover"].random_seed, 24680)
+            self.assertIsNotNone(batches[0].regularization_selection)
+        finally:
+            source._set_dirty(False)
+            loaded._set_dirty(False)
+            source.close()
+            loaded.close()
+
+    def test_uncertainty_presets_default_off_and_select_preview_or_final_counts(self) -> None:
+        window = RayPathMainWindow()
+        try:
+            self.assertEqual(window.ensemble_preset_combo.currentData(), 0)
+            self.assertEqual(window.ensemble_size_spin.value(), 0)
+
+            window.ensemble_preset_combo.setCurrentIndex(window.ensemble_preset_combo.findData(20))
+            self.assertEqual(window.ensemble_size_spin.value(), 20)
+            self.assertTrue(window.ensemble_size_spin.isHidden())
+
+            window.ensemble_preset_combo.setCurrentIndex(window.ensemble_preset_combo.findData(200))
+            self.assertEqual(window.ensemble_size_spin.value(), 200)
+
+            window.ensemble_preset_combo.setCurrentIndex(window.ensemble_preset_combo.findData(-1))
+            self.assertEqual(window.ensemble_size_spin.value(), 50)
+            self.assertFalse(window.ensemble_size_spin.isHidden())
+        finally:
+            window._set_dirty(False)
+            window.close()
+
     def test_accept_current_picks_marks_reviewed_and_advances(self) -> None:
         records = parse_gru(FIXTURES / "minimal.GRU")
         add_suggested_picks(records)
@@ -141,7 +264,7 @@ class ProjectStateTests(unittest.TestCase):
         finally:
             dialog.close()
 
-    def test_waveform_review_and_timing_audit_round_trip_in_schema_six(self) -> None:
+    def test_waveform_review_timing_and_geometry_round_trip_in_schema_seven(self) -> None:
         source = RayPathMainWindow()
         loaded = RayPathMainWindow()
         try:
@@ -149,6 +272,22 @@ class ProjectStateTests(unittest.TestCase):
             add_suggested_picks(source.waveform_records)
             source.gru_path = (FIXTURES / "minimal.GRU").resolve()
             source.gru_pre_trigger_ms = 25.0
+            source.survey_geometry = SurveyGeometry(
+                source_offset_uncertainty_m=0.02,
+                coordinate_system="NZTM2000",
+                vertical_datum="NZVD2016",
+                elevations_enabled=True,
+                source_elevation_m=10.0,
+                receiver_reference_elevation_m=10.0,
+                receiver_depth_reference="CPT ground reference",
+                depth_basis="along_rods",
+                source_to_receiver_bearing_deg=0.0,
+                source_block_axis_bearing_deg=90.0,
+                channel_17_strike_bearing_deg=90.0,
+                channel_18_strike_bearing_deg=270.0,
+                receiver_orientation_bearing_deg=90.0,
+                deviation_points=[DeviationPoint(2.0), DeviationPoint(4.0)],
+            )
             source.waveform_records[0].review_state = "accepted_with_comment"
             source.waveform_records[0].review_comment = "Reviewed despite a synthetic-fixture warning."
             source.waveform_records[0].pick_uncertainty_ms = 0.4
@@ -166,6 +305,9 @@ class ProjectStateTests(unittest.TestCase):
                 self.assertEqual(payload["pick_time_reference"], "relative_to_trigger")
                 self.assertIn("picks_trigger_relative_ms", payload["picks"][0])
                 self.assertIn("picks_recorded_ms", payload["picks"][0])
+                self.assertEqual(payload["survey_geometry"]["coordinate_system"], "NZTM2000")
+                self.assertEqual(payload["geometry_audit"]["corrected_vertical_depths_m"], [2.0, 4.0])
+                self.assertEqual(payload["geometry_audit"]["applicability_warnings"], [])
                 trigger_pick = payload["picks"][0]["picks_trigger_relative_ms"]["first_peak_17"]
                 recorded_pick = payload["picks"][0]["picks_recorded_ms"]["first_peak_17"]
                 self.assertAlmostEqual(recorded_pick - trigger_pick, 25.0)
@@ -178,6 +320,8 @@ class ProjectStateTests(unittest.TestCase):
             )
             self.assertAlmostEqual(loaded.waveform_records[0].pick_uncertainty_ms, 0.4)
             self.assertAlmostEqual(loaded.gru_pre_trigger_ms, 25.0)
+            self.assertEqual(loaded.survey_geometry.coordinate_system, "NZTM2000")
+            self.assertEqual(len(loaded.survey_geometry.deviation_points), 2)
             np.testing.assert_array_equal(
                 loaded.waveform_records[0].recorded_time_ms,
                 [0.0, 25.0, 50.0, 75.0, 100.0],
@@ -195,6 +339,33 @@ class ProjectStateTests(unittest.TestCase):
         try:
             self.assertAlmostEqual(dialog.pre_trigger_ms, 50.0)
             self.assertIn("trigger-relative 0.000 ms", dialog.audit_label.text())
+        finally:
+            dialog.close()
+
+    def test_geometry_dialog_calculates_and_accepts_complete_survey(self) -> None:
+        geometry = SurveyGeometry(
+            source_offset_uncertainty_m=0.02,
+            coordinate_system="NZTM2000",
+            vertical_datum="NZVD2016",
+            elevations_enabled=True,
+            source_elevation_m=10.0,
+            receiver_reference_elevation_m=10.0,
+            receiver_depth_reference="CPT ground reference",
+            source_to_receiver_bearing_deg=0.0,
+            source_block_axis_bearing_deg=90.0,
+            channel_17_strike_bearing_deg=90.0,
+            channel_18_strike_bearing_deg=270.0,
+            receiver_orientation_bearing_deg=90.0,
+            deviation_points=[DeviationPoint(2.0), DeviationPoint(4.0)],
+        )
+        dialog = SurveyGeometryDialog(geometry, [2.0, 4.0], 2.4)
+        try:
+            dialog._save_geometry()
+
+            self.assertIsNotNone(dialog.corrected_geometry)
+            self.assertEqual(dialog.corrected_geometry.warnings, ())
+            np.testing.assert_allclose(dialog.corrected_geometry.vertical_depths_m, [2.0, 4.0])
+            np.testing.assert_allclose(dialog.corrected_geometry.receiver_offsets_m, [2.4, 2.4])
         finally:
             dialog.close()
 
