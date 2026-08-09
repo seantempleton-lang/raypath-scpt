@@ -1,0 +1,55 @@
+{
+  "format": "RayPath SCPT Project",
+  "version": 3,
+  "schema_version": 3,
+  "application_version": "0.1.0-alpha.1",
+  "units": "SI",
+  "gru_pre_trigger_ms": 50.0,
+  "pick_time_reference": "relative_to_trigger",
+  "source_offset_m": 2.4,
+  "regularization": 0.35,
+  "vs30_extrapolation_weight_factor": 1.0,
+  "arrival_estimator": "first_cross",
+  "vs30_history": [],
+  "gru_source": "tests/fixtures/minimal.GRU",
+  "inputs": [
+    {
+      "depth_m": "2.000",
+      "first_peak_ms": "12.000",
+      "first_cross_ms": "12.500",
+      "max_peak_ms": "13.000"
+    },
+    {
+      "depth_m": "4.000",
+      "first_peak_ms": "22.000",
+      "first_cross_ms": "22.500",
+      "max_peak_ms": "23.000"
+    }
+  ],
+  "picks": [
+    {
+      "test_number": 1,
+      "depth_m": 2.0,
+      "picks_ms": {
+        "first_peak_17": 11.8,
+        "first_peak_18": 12.2,
+        "first_cross_17": 12.3,
+        "first_cross_18": 12.7,
+        "max_peak_17": 12.8,
+        "max_peak_18": 13.2
+      }
+    },
+    {
+      "test_number": 2,
+      "depth_m": 4.0,
+      "picks_ms": {
+        "first_peak_17": 21.8,
+        "first_peak_18": 22.2,
+        "first_cross_17": 22.3,
+        "first_cross_18": 22.7,
+        "max_peak_17": 22.8,
+        "max_peak_18": 23.2
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 This single-file desktop application imports GOnsite/GORILLA ``.GRU`` seismic
 records, supports review and manual picking of opposing shear-wave traces, and
-estimates a layered shear-wave velocity profile by regularised least squares.
+estimates an analyst-defined piecewise-constant shear-wave velocity profile by weighted least squares.
 
 All public engineering quantities use SI units: metres, milliseconds, and
 metres per second.  Angles in the numerical core are measured from vertical.
@@ -161,7 +161,14 @@ from matplotlib.lines import Line2D
 
 
 APP_NAME = "RayPath SCPT"
+<<<<<<< Updated upstream
 PROJECT_SUFFIX = ".rpscpt"
+=======
+APP_VERSION = "0.9.0-alpha.1"
+PROJECT_SUFFIX = ".rpscpt"
+PROJECT_SCHEMA_VERSION = 11
+SUPPORTED_PROJECT_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
+>>>>>>> Stashed changes
 GRU_PRE_TRIGGER_MS = 50.0
 VELOCITY_MIN = 50.0
 VELOCITY_MAX = 2000.0
@@ -202,7 +209,7 @@ class RaySolution:
 
 @dataclass
 class InversionResult:
-    """Complete result of a regularised layered inversion."""
+    """Complete result of a layered ray-path inversion."""
 
     depths_m: np.ndarray
     thicknesses_m: np.ndarray
@@ -216,6 +223,99 @@ class InversionResult:
     success: bool
     message: str
     iterations: int
+<<<<<<< Updated upstream
+=======
+    weighted_rmse_s: float = math.nan
+    data_cost_ms2: float = math.nan
+    regularization_cost: float = math.nan
+    roughness_norm: float = math.nan
+    objective_value: float = math.nan
+    observation_std_s: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    standardized_residuals: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    resolution_diagonal: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    observation_leverage: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    influence_scores: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    outlier_flags: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=bool))
+    influential_flags: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=bool))
+    bound_active_flags: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=bool))
+    robust_loss: str = "linear"
+    warnings: tuple[str, ...] = ()
+    model_layer_bottoms_m: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    model_layer_velocities_mps: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    model_layer_resolution: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
+    model_layer_bound_active: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=bool))
+    ray_z_nodes_m: list[np.ndarray] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RegularizationSelectionResult:
+    """Repeatable L-curve selection audit for one arrival-time model."""
+
+    selected_factor: float
+    candidate_factors: np.ndarray
+    weighted_rmse_ms: np.ndarray
+    roughness_norm: np.ndarray
+    chord_distances: np.ndarray
+
+
+@dataclass(frozen=True)
+class VelocityUncertaintyResult:
+    """Monte Carlo velocity and Vs30 percentiles from pick-time uncertainty."""
+
+    random_seed: int
+    requested_models: int
+    successful_models: int
+    percentile_levels: tuple[float, float, float]
+    velocity_lower_mps: np.ndarray
+    velocity_median_mps: np.ndarray
+    velocity_upper_mps: np.ndarray
+    vs30_samples_mps: np.ndarray
+    vs30_lower_mps: float | None
+    vs30_median_mps: float | None
+    vs30_upper_mps: float | None
+    warnings: tuple[str, ...] = ()
+
+
+def uncertainty_ensemble_classification(requested_models: int) -> str:
+    """Return the user/report label for an uncertainty ensemble size."""
+
+    requested = int(requested_models)
+    if requested <= 0:
+        return "Off"
+    if requested < REPORT_QUALITY_ENSEMBLE_MINIMUM:
+        return "Quick preview - preliminary"
+    return "Final/report-quality"
+>>>>>>> Stashed changes
+
+
+@dataclass(frozen=True)
+class IntervalVelocitySeries:
+    """Observed interval velocities for one receiver-pair selection."""
+
+    recorded_top_depths_m: np.ndarray
+    recorded_bottom_depths_m: np.ndarray
+    top_depths_m: np.ndarray
+    bottom_depths_m: np.ndarray
+    centre_depths_m: np.ndarray
+    path_length_differences_m: np.ndarray
+    arrival_time_differences_s: np.ndarray
+    velocities_mps: np.ndarray
+    standard_deviations_mps: np.ndarray
+    valid_flags: np.ndarray
+    status_messages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StaggeredIntervalComparison:
+    """Adjacent and staggered 1 m interval-velocity sensitivity series."""
+
+    adjacent: IntervalVelocitySeries
+    phase_a: IntervalVelocitySeries
+    phase_b: IntervalVelocitySeries
+    slowness_mean_depths_m: np.ndarray
+    slowness_mean_velocities_mps: np.ndarray
+    target_interval_m: float
+    tolerance_m: float
 
 
 @dataclass(frozen=True)
@@ -308,6 +408,80 @@ def forward_model(
     return np.asarray([ray.travel_time_s for ray in rays]), rays
 
 
+def _validate_layered_geometry(
+    receiver_depths_m: Sequence[float],
+    layer_bottoms_m: Sequence[float],
+    layer_velocities_mps: Sequence[float] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Validate receiver depths and an interpreted piecewise-constant model."""
+
+    receivers = np.asarray(receiver_depths_m, dtype=float)
+    bottoms = np.asarray(layer_bottoms_m, dtype=float)
+    if receivers.ndim != 1 or receivers.size < 2:
+        raise ValueError("A layered interpretation requires at least two receiver observations.")
+    if not np.all(np.isfinite(receivers)) or not np.all(receivers > 0.0) or np.any(np.diff(receivers) <= 0.0):
+        raise ValueError("Receiver depths must be finite, positive, and strictly increasing.")
+    if bottoms.ndim != 1 or bottoms.size < 1:
+        raise ValueError("Enter at least one interpreted layer ending at the deepest receiver.")
+    if not np.all(np.isfinite(bottoms)) or not np.all(bottoms > 0.0) or np.any(np.diff(bottoms) <= 0.0):
+        raise ValueError("Interpreted layer bottoms must be finite, positive, and strictly increasing.")
+    tolerance = max(1.0e-6, float(receivers[-1]) * 1.0e-8)
+    if not math.isclose(float(bottoms[-1]), float(receivers[-1]), rel_tol=0.0, abs_tol=tolerance):
+        raise ValueError("The final interpreted layer must end at the deepest corrected receiver depth.")
+    if bottoms.size >= receivers.size:
+        raise ValueError(
+            "The layered model must contain fewer velocity parameters than receiver observations. "
+            "Remove at least one internal boundary."
+        )
+    velocities: np.ndarray | None = None
+    if layer_velocities_mps is not None:
+        velocities = np.asarray(layer_velocities_mps, dtype=float)
+        if velocities.ndim != 1 or velocities.size != bottoms.size:
+            raise ValueError("Provide one velocity for every interpreted layer.")
+        if not np.all(np.isfinite(velocities)) or not np.all(velocities > 0.0):
+            raise ValueError("Layer velocities must be finite and greater than zero.")
+    return receivers, bottoms, velocities
+
+
+def forward_layered_model(
+    receiver_depths_m: Sequence[float],
+    layer_bottoms_m: Sequence[float],
+    layer_velocities_mps: Sequence[float],
+    source_offset_m: float,
+    receiver_offsets_m: Sequence[float] | None = None,
+) -> tuple[np.ndarray, list[RaySolution], list[np.ndarray]]:
+    """Calculate direct refracted rays through interpreted constant-Vs layers.
+
+    Receiver depths may fall inside a model layer. The final crossed layer is
+    truncated at that receiver while the same fitted velocity is retained.
+    """
+
+    receivers, bottoms, velocities_raw = _validate_layered_geometry(
+        receiver_depths_m, layer_bottoms_m, layer_velocities_mps
+    )
+    assert velocities_raw is not None
+    velocities = velocities_raw
+    if receiver_offsets_m is None:
+        offsets = np.full(receivers.size, float(source_offset_m), dtype=float)
+    else:
+        offsets = np.asarray(receiver_offsets_m, dtype=float)
+        if offsets.ndim != 1 or offsets.size != receivers.size:
+            raise ValueError("Receiver offsets must contain one value for every receiver depth.")
+    if not np.all(np.isfinite(offsets)) or not np.all(offsets >= 0.0):
+        raise ValueError("Receiver offsets must be finite and greater than or equal to zero.")
+
+    rays: list[RaySolution] = []
+    z_nodes: list[np.ndarray] = []
+    for receiver_depth, offset in zip(receivers, offsets):
+        last_layer = int(np.searchsorted(bottoms, receiver_depth, side="left"))
+        segment_bottoms = np.r_[bottoms[:last_layer], receiver_depth]
+        thicknesses = np.diff(np.r_[0.0, segment_bottoms])
+        ray = solve_direct_ray(thicknesses, velocities[: thicknesses.size], float(offset))
+        rays.append(ray)
+        z_nodes.append(np.r_[0.0, segment_bottoms])
+    return np.asarray([ray.travel_time_s for ray in rays]), rays, z_nodes
+
+
 def pseudo_interval_velocities(depths_m: Sequence[float], arrival_times_s: Sequence[float]) -> np.ndarray:
     """Return the conventional uncorrected ``delta depth / delta time`` profile."""
 
@@ -321,6 +495,354 @@ def pseudo_interval_velocities(depths_m: Sequence[float], arrival_times_s: Seque
     return raw
 
 
+<<<<<<< Updated upstream
+=======
+def staggered_interval_velocity_comparison(
+    recorded_depths_m: Sequence[float],
+    corrected_vertical_depths_m: Sequence[float],
+    receiver_offsets_m: Sequence[float],
+    arrival_times_s: Sequence[float],
+    observation_std_s: Sequence[float] | None = None,
+    target_interval_m: float = 1.0,
+    tolerance_m: float = 0.15,
+) -> StaggeredIntervalComparison:
+    """Calculate adjacent and alternating wider observed interval velocities.
+
+    The distance coordinate is the geometric source-to-receiver path length,
+    ``sqrt(vertical_depth**2 + radial_offset**2)``. Each velocity is the
+    difference in path length divided by the picked arrival-time difference.
+    Candidate wider windows are paired when their *recorded* receiver-depth
+    separation is within ``tolerance_m`` of ``target_interval_m``. Phase A is
+    anchored to whole-metre recorded depths and phase B to the grid half a
+    target interval deeper.
+
+    The optional combined curve interpolates each phase in slowness space and
+    averages slowness, not velocity. It is a display sensitivity only because
+    neighbouring 1 m windows overlap and are not independent observations.
+    """
+
+    recorded = np.asarray(recorded_depths_m, dtype=float)
+    vertical = np.asarray(corrected_vertical_depths_m, dtype=float)
+    offsets = np.asarray(receiver_offsets_m, dtype=float)
+    arrivals = np.asarray(arrival_times_s, dtype=float)
+    size = recorded.size
+    if size < 3 or any(array.ndim != 1 or array.size != size for array in (vertical, offsets, arrivals)):
+        raise ValueError("Staggered interval comparison requires at least three matching receiver observations.")
+    if not all(np.all(np.isfinite(array)) for array in (recorded, vertical, offsets, arrivals)):
+        raise ValueError("Staggered interval inputs must be finite.")
+    if (
+        not np.all(recorded > 0.0)
+        or not np.all(vertical > 0.0)
+        or not np.all(offsets >= 0.0)
+        or not np.all(arrivals > 0.0)
+        or not np.all(np.diff(recorded) > 0.0)
+        or not np.all(np.diff(vertical) > 0.0)
+    ):
+        raise ValueError("Receiver depths and arrivals must be positive, with depths strictly increasing.")
+    target = float(target_interval_m)
+    tolerance = float(tolerance_m)
+    if not math.isfinite(target) or target <= 0.0 or not math.isfinite(tolerance) or tolerance < 0.0:
+        raise ValueError("Target interval must be positive and tolerance must be non-negative.")
+    if observation_std_s is None:
+        standard_deviations = np.full(size, np.nan, dtype=float)
+    else:
+        standard_deviations = np.asarray(observation_std_s, dtype=float)
+        if standard_deviations.ndim != 1 or standard_deviations.size != size:
+            raise ValueError("Arrival uncertainty must contain one value per receiver observation.")
+        if not np.all(np.isfinite(standard_deviations)) or not np.all(standard_deviations > 0.0):
+            raise ValueError("Arrival uncertainties must be finite and greater than zero.")
+
+    path_lengths = np.hypot(vertical, offsets)
+
+    def make_series(pairs: Sequence[tuple[int, int]]) -> IntervalVelocitySeries:
+        recorded_tops: list[float] = []
+        recorded_bottoms: list[float] = []
+        tops: list[float] = []
+        bottoms: list[float] = []
+        centres: list[float] = []
+        path_differences: list[float] = []
+        time_differences: list[float] = []
+        velocities: list[float] = []
+        velocity_std: list[float] = []
+        valid_flags: list[bool] = []
+        status_messages: list[str] = []
+        for first, second in pairs:
+            delta_time = float(arrivals[second] - arrivals[first])
+            delta_path = float(path_lengths[second] - path_lengths[first])
+            recorded_tops.append(float(recorded[first]))
+            recorded_bottoms.append(float(recorded[second]))
+            tops.append(float(vertical[first]))
+            bottoms.append(float(vertical[second]))
+            centres.append(0.5 * float(vertical[first] + vertical[second]))
+            path_differences.append(delta_path)
+            time_differences.append(delta_time)
+            if delta_path <= 0.0:
+                velocities.append(math.nan)
+                velocity_std.append(math.nan)
+                valid_flags.append(False)
+                status_messages.append("Invalid: non-positive geometric path-length difference")
+                continue
+            if delta_time <= 0.0:
+                velocities.append(math.nan)
+                velocity_std.append(math.nan)
+                valid_flags.append(False)
+                status_messages.append("Invalid: non-positive picked arrival-time difference; review picks")
+                continue
+            velocity = delta_path / delta_time
+            velocities.append(velocity)
+            if np.all(np.isfinite(standard_deviations[[first, second]])):
+                delta_time_std = math.hypot(
+                    float(standard_deviations[first]), float(standard_deviations[second])
+                )
+                velocity_std.append(velocity * delta_time_std / delta_time)
+            else:
+                velocity_std.append(math.nan)
+            valid_flags.append(True)
+            status_messages.append("Valid")
+        return IntervalVelocitySeries(
+            recorded_top_depths_m=np.asarray(recorded_tops, dtype=float),
+            recorded_bottom_depths_m=np.asarray(recorded_bottoms, dtype=float),
+            top_depths_m=np.asarray(tops, dtype=float),
+            bottom_depths_m=np.asarray(bottoms, dtype=float),
+            centre_depths_m=np.asarray(centres, dtype=float),
+            path_length_differences_m=np.asarray(path_differences, dtype=float),
+            arrival_time_differences_s=np.asarray(time_differences, dtype=float),
+            velocities_mps=np.asarray(velocities, dtype=float),
+            standard_deviations_mps=np.asarray(velocity_std, dtype=float),
+            valid_flags=np.asarray(valid_flags, dtype=bool),
+            status_messages=tuple(status_messages),
+        )
+
+    adjacent_pairs = [(index, index + 1) for index in range(size - 1)]
+    wider_pairs: list[tuple[int, int]] = []
+    for first in range(size - 1):
+        separations = recorded[first + 1 :] - recorded[first]
+        relative_index = int(np.argmin(np.abs(separations - target)))
+        second = first + 1 + relative_index
+        if abs(float(separations[relative_index] - target)) <= tolerance:
+            wider_pairs.append((first, second))
+    # Anchor the two phases to absolute recorded receiver depth rather than the
+    # retained-row index, so excluding one observation does not swap every
+    # deeper window. For a 1 m target, phase A starts on whole-metre depths and
+    # phase B starts on half-metre depths.
+    phase_a_pairs: list[tuple[int, int]] = []
+    phase_b_pairs: list[tuple[int, int]] = []
+    for pair in wider_pairs:
+        phase_position = float(recorded[pair[0]] % target)
+        distance_to_a = min(phase_position, target - phase_position)
+        distance_to_b = abs(phase_position - 0.5 * target)
+        (phase_a_pairs if distance_to_a <= distance_to_b else phase_b_pairs).append(pair)
+    adjacent = make_series(adjacent_pairs)
+    phase_a = make_series(phase_a_pairs)
+    phase_b = make_series(phase_b_pairs)
+
+    mean_depths = np.empty(0, dtype=float)
+    mean_velocities = np.empty(0, dtype=float)
+    finite_a = np.isfinite(phase_a.velocities_mps)
+    finite_b = np.isfinite(phase_b.velocities_mps)
+    phase_a_depths = phase_a.centre_depths_m[finite_a]
+    phase_b_depths = phase_b.centre_depths_m[finite_b]
+    phase_a_velocities = phase_a.velocities_mps[finite_a]
+    phase_b_velocities = phase_b.velocities_mps[finite_b]
+    if phase_a_depths.size >= 2 and phase_b_depths.size >= 2:
+        overlap_top = max(float(phase_a_depths[0]), float(phase_b_depths[0]))
+        overlap_bottom = min(float(phase_a_depths[-1]), float(phase_b_depths[-1]))
+        candidate_depths = np.unique(
+            np.r_[phase_a_depths, phase_b_depths].round(9)
+        )
+        mean_depths = candidate_depths[
+            (candidate_depths >= overlap_top - 1.0e-9) & (candidate_depths <= overlap_bottom + 1.0e-9)
+        ]
+        if mean_depths.size:
+            slowness_a = np.interp(
+                mean_depths, phase_a_depths, 1.0 / phase_a_velocities
+            )
+            slowness_b = np.interp(
+                mean_depths, phase_b_depths, 1.0 / phase_b_velocities
+            )
+            mean_velocities = 1.0 / (0.5 * (slowness_a + slowness_b))
+
+    return StaggeredIntervalComparison(
+        adjacent=adjacent,
+        phase_a=phase_a,
+        phase_b=phase_b,
+        slowness_mean_depths_m=mean_depths,
+        slowness_mean_velocities_mps=mean_velocities,
+        target_interval_m=target,
+        tolerance_m=tolerance,
+    )
+
+
+def _validated_vs_profile(
+    depths_m: Sequence[float], velocities_mps: Sequence[float], calculation_name: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return validated one-dimensional layer-bottom depths and velocities."""
+
+    depths = np.asarray(depths_m, dtype=float)
+    velocities = np.asarray(velocities_mps, dtype=float)
+    if depths.ndim != 1 or velocities.ndim != 1 or depths.size == 0 or depths.size != velocities.size:
+        raise ValueError(f"{calculation_name} requires matching non-empty depth and velocity arrays.")
+    if not np.all(np.isfinite(depths)) or not np.all(depths > 0.0) or not np.all(np.diff(depths) > 0.0):
+        raise ValueError(f"{calculation_name} layer depths must be finite, positive, and strictly increasing.")
+    if not np.all(np.isfinite(velocities)) or not np.all(velocities > 0.0):
+        raise ValueError(f"{calculation_name} layer velocities must be finite and greater than zero.")
+    return depths, velocities
+
+
+def _interval_overlap(
+    tops_m: np.ndarray, bottoms_m: np.ndarray, range_top_m: float, range_bottom_m: float
+) -> np.ndarray:
+    """Return layer thickness lying within one closed-open depth range."""
+
+    return np.maximum(0.0, np.minimum(bottoms_m, range_bottom_m) - np.maximum(tops_m, range_top_m))
+
+
+def ts1170_5_vs30_band(value_mps: float) -> str:
+    """Return the numerical TS 1170.5 Vs30 screening band for one value.
+
+    This is deliberately not a final site-class assignment because Classes I,
+    II, III, V, and VI include criteria that cannot be resolved from Vs30
+    alone.
+    """
+
+    value = float(value_mps)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("A TS 1170.5 Vs30 screening value must be finite and greater than zero.")
+    if value <= 150.0:
+        return "VII"
+    if value <= 200.0:
+        return "VI"
+    if value <= 250.0:
+        return "V"
+    if value <= 300.0:
+        return "IV"
+    if value <= 450.0:
+        return "III"
+    if value <= 750.0:
+        return "II"
+    return "I"
+
+
+def _vs30_bands_over_range(lower_mps: float, upper_mps: float) -> tuple[str, ...]:
+    """Return every numerical Vs30 band intersected by an uncertainty range."""
+
+    lower = float(lower_mps)
+    upper = float(upper_mps)
+    if lower > upper:
+        lower, upper = upper, lower
+    probes = [lower, upper]
+    for threshold in (150.0, 200.0, 250.0, 300.0, 450.0, 750.0):
+        if lower < threshold < upper:
+            probes.extend((threshold, float(np.nextafter(threshold, math.inf))))
+    ordered = ("VII", "VI", "V", "IV", "III", "II", "I")
+    present = {ts1170_5_vs30_band(value) for value in probes}
+    return tuple(band for band in ordered if band in present)
+
+
+def calculate_ts1170_5_method1_vs30(
+    depths_m: Sequence[float], velocities_mps: Sequence[float]
+) -> Ts1170Method1Vs30Result:
+    """Calculate TS 1170.5:2025 Method 1 Vs30 for a direct SCPT profile.
+
+    ``depths_m`` are successive layer-bottom depths and ``velocities_mps``
+    are the corresponding interval velocities.  Continuous direct Vs coverage
+    from the surface to at least 25 m is required.  The calculation follows
+    the published Method 1 SCPT/downhole treatment: the 0-to-3 m interval uses
+    the thickness-weighted arithmetic mean of measured Vs from 2.5-to-3.5 m,
+    and the final measured layer is extended to 30 m where necessary.  The
+    5 percent uncertainty bounds are central/1.05 and central*1.05.
+    """
+
+    depths, velocities = _validated_vs_profile(depths_m, velocities_mps, "TS 1170.5 Method 1 Vs30")
+    target_depth_m = 30.0
+    minimum_measured_depth_m = 25.0
+    measured_depth = float(depths[-1])
+    if measured_depth < minimum_measured_depth_m - 1.0e-9:
+        raise ValueError(
+            f"The directly measured Vs profile reaches {measured_depth:.2f} m; TS 1170.5:2025 "
+            f"Method 1 requires direct field measurement to at least {minimum_measured_depth_m:.2f} m."
+        )
+
+    original_tops = np.r_[0.0, depths[:-1]]
+    reference_overlap = _interval_overlap(original_tops, depths, 2.5, 3.5)
+    reference_thickness = float(np.sum(reference_overlap))
+    if not math.isclose(reference_thickness, 1.0, rel_tol=0.0, abs_tol=1.0e-8):
+        raise ValueError("The measured profile does not continuously cover the required 2.5-to-3.5 m interval.")
+    shallow_reference_velocity = float(np.sum(reference_overlap * velocities) / reference_thickness)
+
+    boundaries = sorted(
+        {
+            0.0,
+            3.0,
+            target_depth_m,
+            *[float(depth) for depth in depths if 0.0 < depth < target_depth_m],
+        }
+    )
+    interval_tops = np.asarray(boundaries[:-1], dtype=float)
+    interval_bottoms = np.asarray(boundaries[1:], dtype=float)
+    included_thicknesses = interval_bottoms - interval_tops
+    interval_midpoints = 0.5 * (interval_tops + interval_bottoms)
+    source_indices = np.searchsorted(depths, np.minimum(interval_midpoints, measured_depth), side="right")
+    source_indices = np.minimum(source_indices, velocities.size - 1)
+    raw_velocities = velocities[source_indices].astype(float, copy=True)
+    adjusted_velocities = raw_velocities.copy()
+    adjusted_velocities[interval_bottoms <= 3.0 + 1.0e-10] = shallow_reference_velocity
+
+    extrapolated_thickness = max(0.0, target_depth_m - measured_depth)
+    extrapolated_velocity = float(velocities[-1]) if extrapolated_thickness > 1.0e-9 else None
+    raw_time = float(np.sum(included_thicknesses / raw_velocities))
+    adjusted_time = float(np.sum(included_thicknesses / adjusted_velocities))
+    if not math.isfinite(adjusted_time) or adjusted_time <= 0.0:
+        raise ValueError("The standards-adjusted vertical travel time to 30 m is invalid.")
+    raw_value = target_depth_m / raw_time
+    value = target_depth_m / adjusted_time
+    uncertainty = 1.05
+    lower = value / uncertainty
+    upper = value * uncertainty
+
+    slow_overlap = _interval_overlap(original_tops, depths, 0.0, min(20.0, measured_depth))
+    slow_thickness = float(np.sum(slow_overlap[velocities <= 150.0]))
+    bands = _vs30_bands_over_range(lower, upper)
+    notes = [
+        "Method 1 direct SCPT/downhole shallow-layer adjustment applied from 0 to 3 m.",
+        "Indicative bands use Vs30 thresholds only; final TS site classification requires all additional criteria.",
+    ]
+    if extrapolated_thickness > 1.0e-9:
+        notes.append(
+            f"The last directly measured layer velocity was extended through the final {extrapolated_thickness:.2f} m."
+        )
+    if slow_thickness > 10.0 + 1.0e-9:
+        notes.append(
+            "More than 10 m of the upper 20 m has Vs at or below 150 m/s; the TS Site Class VI soil criteria require review."
+        )
+    if len(bands) > 1:
+        notes.append("The 5% Method 1 uncertainty range intersects multiple numerical Vs30 bands.")
+
+    return Ts1170Method1Vs30Result(
+        method="TS 1170.5:2025 Method 1 — direct measured Vs",
+        value_mps=value,
+        lower_bound_mps=lower,
+        upper_bound_mps=upper,
+        uncertainty_factor=0.05,
+        raw_value_mps=raw_value,
+        vertical_travel_time_s=adjusted_time,
+        raw_vertical_travel_time_s=raw_time,
+        included_thicknesses_m=included_thicknesses,
+        included_velocities_mps=adjusted_velocities,
+        raw_included_velocities_mps=raw_velocities,
+        measured_depth_m=measured_depth,
+        adjusted_shallow_thickness_m=3.0,
+        shallow_reference_velocity_mps=shallow_reference_velocity,
+        extrapolated_thickness_m=extrapolated_thickness,
+        extrapolated_velocity_mps=extrapolated_velocity,
+        slow_velocity_thickness_top20_m=slow_thickness,
+        indicative_vs30_bands=bands,
+        spans_multiple_vs30_bands=len(bands) > 1,
+        notes=tuple(notes),
+    )
+
+
+>>>>>>> Stashed changes
 def calculate_vs30(
     depths_m: Sequence[float],
     velocities_mps: Sequence[float],
@@ -520,6 +1042,507 @@ def invert_velocity_profile(
         success=bool(result.success),
         message=str(result.message),
         iterations=int(getattr(result, "nit", 0)),
+<<<<<<< Updated upstream
+=======
+        weighted_rmse_s=weighted_rmse_ms / 1000.0,
+        data_cost_ms2=final_data_cost,
+        regularization_cost=regularization_contribution,
+        roughness_norm=roughness_norm,
+        objective_value=final_data_cost + regularization_contribution,
+        observation_std_s=observation_std.copy(),
+        standardized_residuals=standardized_residuals,
+        resolution_diagonal=resolution,
+        observation_leverage=leverage,
+        influence_scores=influence,
+        outlier_flags=outlier_flags,
+        influential_flags=influential_flags,
+        bound_active_flags=bound_active,
+        robust_loss=loss_name,
+        warnings=tuple(warnings),
+    )
+
+
+def invert_layered_velocity_profile(
+    depths_m: Sequence[float],
+    observed_times_s: Sequence[float],
+    source_offset_m: float,
+    layer_bottoms_m: Sequence[float],
+    progress_callback: Any | None = None,
+    receiver_offsets_m: Sequence[float] | None = None,
+    observation_std_s: Sequence[float] | None = None,
+    robust_loss: str = "linear",
+    huber_threshold_sigma: float = 1.5,
+) -> InversionResult:
+    """Fit one constant Vs per analyst-defined layer without smoothing.
+
+    The number and depths of model layers are fixed by the interpretation.
+    Arrival-time uncertainty controls data weighting, while the optional Huber
+    loss limits the influence of outliers. No roughness, smoothing, or
+    regularisation term is applied.
+    """
+
+    z, layer_bottoms, _unused = _validate_layered_geometry(depths_m, layer_bottoms_m)
+    t_obs = np.asarray(observed_times_s, dtype=float)
+    if t_obs.ndim != 1 or t_obs.size != z.size or not np.all(np.isfinite(t_obs)) or not np.all(t_obs > 0.0):
+        raise ValueError("Provide one finite positive arrival time for every receiver depth.")
+    if not math.isfinite(source_offset_m) or source_offset_m < 0.0:
+        raise ValueError("Source offset must be finite and non-negative.")
+    if receiver_offsets_m is None:
+        receiver_offsets = np.full(z.size, float(source_offset_m), dtype=float)
+    else:
+        receiver_offsets = np.asarray(receiver_offsets_m, dtype=float)
+        if receiver_offsets.ndim != 1 or receiver_offsets.size != z.size:
+            raise ValueError("Receiver offsets must contain one value for every receiver depth.")
+        if not np.all(np.isfinite(receiver_offsets)) or not np.all(receiver_offsets >= 0.0):
+            raise ValueError("Receiver offsets must be finite and non-negative.")
+    if observation_std_s is None:
+        observation_std = np.full(z.size, 0.001, dtype=float)
+    else:
+        observation_std = np.asarray(observation_std_s, dtype=float)
+        if observation_std.ndim != 1 or observation_std.size != z.size:
+            raise ValueError("Observation uncertainty must contain one standard deviation per arrival.")
+        if not np.all(np.isfinite(observation_std)) or not np.all(observation_std > 0.0):
+            raise ValueError("Observation standard deviations must be finite and greater than zero.")
+    loss_name = str(robust_loss).strip().lower()
+    if loss_name not in {"linear", "huber"}:
+        raise ValueError("Robust loss must be 'linear' or 'huber'.")
+    huber_delta = float(huber_threshold_sigma)
+    if not math.isfinite(huber_delta) or huber_delta <= 0.0:
+        raise ValueError("The Huber threshold must be finite and greater than zero.")
+
+    layer_count = layer_bottoms.size
+    interval_layer_indices = np.searchsorted(layer_bottoms, z, side="left")
+    receiver_initial = _initial_velocity_estimate(z, t_obs, receiver_offsets)
+    finite_initial = receiver_initial[np.isfinite(receiver_initial)]
+    fallback = float(np.median(finite_initial)) if finite_initial.size else 250.0
+    initial = np.full(layer_count, fallback, dtype=float)
+    for layer_index in range(layer_count):
+        candidates = receiver_initial[interval_layer_indices == layer_index]
+        candidates = candidates[np.isfinite(candidates) & (candidates > 0.0)]
+        if candidates.size:
+            initial[layer_index] = float(np.median(candidates))
+    initial = np.clip(initial, VELOCITY_MIN, VELOCITY_MAX)
+    lower = math.log(VELOCITY_MIN)
+    upper = math.log(VELOCITY_MAX)
+    sigma_ms = observation_std * 1000.0
+    inverse_variance = 1.0 / (sigma_ms * sigma_ms)
+    sigma_reference_ms = math.sqrt(z.size / float(np.sum(inverse_variance)))
+    eval_count = 0
+
+    def layered_jacobian_ms(velocities: np.ndarray, rays: Sequence[RaySolution], z_nodes: Sequence[np.ndarray]) -> np.ndarray:
+        jacobian = np.zeros((z.size, layer_count), dtype=float)
+        for receiver_index, (ray, nodes) in enumerate(zip(rays, z_nodes)):
+            thicknesses = np.diff(nodes)
+            path_lengths = thicknesses / np.cos(ray.angles_rad)
+            crossed = thicknesses.size
+            jacobian[receiver_index, :crossed] = -1000.0 * path_lengths / velocities[:crossed]
+        return jacobian
+
+    def objective(log_vs: np.ndarray) -> tuple[float, np.ndarray]:
+        nonlocal eval_count
+        eval_count += 1
+        velocities = np.exp(log_vs)
+        try:
+            calculated, rays, z_nodes = forward_layered_model(
+                z,
+                layer_bottoms,
+                velocities,
+                source_offset_m,
+                receiver_offsets,
+            )
+        except (ValueError, RayPathError, FloatingPointError):
+            return 1.0e30, np.zeros_like(log_vs)
+        residual_ms = (calculated - t_obs) * 1000.0
+        standardized = residual_ms / sigma_ms
+        if loss_name == "huber":
+            absolute = np.abs(standardized)
+            rho = np.where(
+                absolute <= huber_delta,
+                standardized * standardized,
+                2.0 * huber_delta * absolute - huber_delta * huber_delta,
+            )
+            psi = np.where(
+                absolute <= huber_delta,
+                2.0 * standardized,
+                2.0 * huber_delta * np.sign(standardized),
+            )
+        else:
+            rho = standardized * standardized
+            psi = 2.0 * standardized
+        data_cost = float(sigma_reference_ms * sigma_reference_ms * np.mean(rho))
+        jacobian = layered_jacobian_ms(velocities, rays, z_nodes)
+        gradient = sigma_reference_ms * sigma_reference_ms / z.size * jacobian.T.dot(psi / sigma_ms)
+        if progress_callback is not None and eval_count % 10 == 0:
+            progress_callback(eval_count, math.sqrt(max(data_cost, 0.0)))
+        return data_cost, gradient
+
+    optimisation = minimize(
+        objective,
+        np.log(initial),
+        method="L-BFGS-B",
+        jac=True,
+        bounds=[(lower, upper)] * layer_count,
+        options={"maxiter": 600, "ftol": 1.0e-12, "gtol": 1.0e-7, "maxls": 40},
+    )
+    layer_velocities = np.exp(optimisation.x)
+    calculated, rays, ray_z_nodes = forward_layered_model(
+        z,
+        layer_bottoms,
+        layer_velocities,
+        source_offset_m,
+        receiver_offsets,
+    )
+    residuals = calculated - t_obs
+    residual_ms = residuals * 1000.0
+    standardized_residuals = residuals / observation_std
+    if loss_name == "huber":
+        absolute_standardized = np.abs(standardized_residuals)
+        robust_weight = np.where(
+            absolute_standardized <= huber_delta,
+            1.0,
+            huber_delta / np.maximum(absolute_standardized, np.finfo(float).eps),
+        )
+        rho = np.where(
+            absolute_standardized <= huber_delta,
+            standardized_residuals * standardized_residuals,
+            2.0 * huber_delta * absolute_standardized - huber_delta * huber_delta,
+        )
+    else:
+        robust_weight = np.ones(z.size, dtype=float)
+        rho = standardized_residuals * standardized_residuals
+    normalised_weight = inverse_variance / float(np.mean(inverse_variance))
+    weighted_rmse_ms = float(np.sqrt(np.mean(normalised_weight * residual_ms * residual_ms)))
+    final_jacobian = layered_jacobian_ms(layer_velocities, rays, ray_z_nodes)
+    weighted_jacobian = np.sqrt(normalised_weight * robust_weight / z.size)[:, np.newaxis] * final_jacobian
+    if int(np.linalg.matrix_rank(weighted_jacobian, tol=1.0e-10)) < layer_count:
+        raise RayPathError(
+            "The interpreted layer model is not independently resolvable from these observations. "
+            "Remove or revise layer boundaries."
+        )
+    data_hessian = weighted_jacobian.T.dot(weighted_jacobian)
+    information = data_hessian + np.eye(layer_count) * max(
+        1.0e-12, float(np.trace(data_hessian)) * 1.0e-12 / layer_count
+    )
+    inverse_information = np.linalg.pinv(information, rcond=1.0e-10)
+    layer_resolution = np.clip(np.diag(inverse_information.dot(data_hessian)), 0.0, 1.0)
+    hat_matrix = weighted_jacobian.dot(inverse_information).dot(weighted_jacobian.T)
+    leverage = np.clip(np.diag(hat_matrix), 0.0, 1.0 - 1.0e-9)
+    influence = np.abs(standardized_residuals) * np.sqrt(
+        leverage / np.maximum(1.0 - leverage, 1.0e-9)
+    )
+    outlier_flags = np.abs(standardized_residuals) > 3.0
+    influential_flags = influence > 2.0
+    bound_tolerance = 1.0e-3
+    layer_bound_active = (optimisation.x <= lower + bound_tolerance) | (optimisation.x >= upper - bound_tolerance)
+    expanded_velocities = layer_velocities[interval_layer_indices]
+    expanded_resolution = layer_resolution[interval_layer_indices]
+    expanded_bound_active = layer_bound_active[interval_layer_indices]
+    final_data_cost = float(sigma_reference_ms * sigma_reference_ms * np.mean(rho))
+    warnings: list[str] = []
+    if np.any(layer_bound_active):
+        warnings.append(f"{int(np.count_nonzero(layer_bound_active))} interpreted layer velocity parameter(s) are at solver bounds.")
+    if np.any(layer_resolution < 0.20):
+        warnings.append(f"{int(np.count_nonzero(layer_resolution < 0.20))} interpreted layer(s) have low linearised resolution (<0.20).")
+    if np.any(outlier_flags):
+        warnings.append(f"{int(np.count_nonzero(outlier_flags))} observation(s) exceed 3 standard deviations.")
+    if np.any(influential_flags):
+        warnings.append(f"{int(np.count_nonzero(influential_flags))} observation(s) have influence score above 2.")
+    usable = bool(np.all(np.isfinite(layer_velocities)) and np.all(np.isfinite(calculated)))
+    if not usable:
+        raise RayPathError(f"Layered inversion did not produce a finite model: {optimisation.message}")
+    return InversionResult(
+        depths_m=z,
+        thicknesses_m=np.diff(np.r_[0.0, z]),
+        velocities_mps=expanded_velocities,
+        observed_times_s=t_obs,
+        calculated_times_s=calculated,
+        residuals_s=residuals,
+        ray_parameters=np.asarray([ray.ray_parameter for ray in rays]),
+        ray_x_segments=[ray.horizontal_segments_m.copy() for ray in rays],
+        receiver_offsets_m=receiver_offsets.copy(),
+        rmse_s=float(np.sqrt(np.mean(residuals * residuals))),
+        success=bool(optimisation.success),
+        message=f"Piecewise-constant layered model; {optimisation.message}",
+        iterations=int(getattr(optimisation, "nit", 0)),
+        weighted_rmse_s=weighted_rmse_ms / 1000.0,
+        data_cost_ms2=final_data_cost,
+        regularization_cost=0.0,
+        roughness_norm=0.0,
+        objective_value=final_data_cost,
+        observation_std_s=observation_std.copy(),
+        standardized_residuals=standardized_residuals,
+        resolution_diagonal=expanded_resolution,
+        observation_leverage=leverage,
+        influence_scores=influence,
+        outlier_flags=outlier_flags,
+        influential_flags=influential_flags,
+        bound_active_flags=expanded_bound_active,
+        robust_loss=loss_name,
+        warnings=tuple(warnings),
+        model_layer_bottoms_m=layer_bottoms.copy(),
+        model_layer_velocities_mps=layer_velocities,
+        model_layer_resolution=layer_resolution,
+        model_layer_bound_active=layer_bound_active,
+        ray_z_nodes_m=[nodes.copy() for nodes in ray_z_nodes],
+    )
+
+
+def result_model_profile(result: InversionResult) -> tuple[np.ndarray, np.ndarray]:
+    """Return the actual interpreted layer profile represented by a result."""
+
+    if (
+        result.model_layer_bottoms_m.size
+        and result.model_layer_bottoms_m.size == result.model_layer_velocities_mps.size
+    ):
+        return result.model_layer_bottoms_m, result.model_layer_velocities_mps
+    return result.depths_m, result.velocities_mps
+
+
+def select_regularization_lcurve(
+    depths_m: Sequence[float],
+    observed_times_s: Sequence[float],
+    source_offset_m: float,
+    receiver_offsets_m: Sequence[float] | None = None,
+    observation_std_s: Sequence[float] | None = None,
+    robust_loss: str = "linear",
+    candidate_factors: Sequence[float] = (0.0, 0.02, 0.05, 0.10, 0.20, 0.35, 0.55, 0.75, 1.0),
+) -> tuple[RegularizationSelectionResult, InversionResult]:
+    """Select regularisation using maximum distance from the log-log L-curve chord.
+
+    All candidate models use identical observations, uncertainty weights, loss,
+    bounds, and geometry.  The end points define a chord after both log axes are
+    normalised to 0..1; the interior candidate farthest toward the L-curve
+    corner is selected.  This deterministic criterion supplements, rather than
+    removes, the manual slider.
+    """
+
+    factors = np.asarray(candidate_factors, dtype=float)
+    if factors.ndim != 1 or factors.size < 3 or not np.all(np.isfinite(factors)):
+        raise ValueError("L-curve selection requires at least three finite candidate factors.")
+    if np.any(factors < 0.0) or np.any(factors > 1.0) or np.any(np.diff(factors) <= 0.0):
+        raise ValueError("L-curve candidate factors must be strictly increasing within 0..1.")
+    models = [
+        invert_velocity_profile(
+            depths_m,
+            observed_times_s,
+            source_offset_m,
+            regularization=float(factor),
+            receiver_offsets_m=receiver_offsets_m,
+            observation_std_s=observation_std_s,
+            robust_loss=robust_loss,
+        )
+        for factor in factors
+    ]
+    misfit = np.asarray([max(model.weighted_rmse_s * 1000.0, 1.0e-12) for model in models])
+    roughness = np.asarray([max(model.roughness_norm, 1.0e-12) for model in models])
+    x = np.log10(roughness)
+    y = np.log10(misfit)
+
+    def normalise(values: np.ndarray) -> np.ndarray:
+        span = float(np.ptp(values))
+        return np.zeros_like(values) if span <= 1.0e-12 else (values - float(np.min(values))) / span
+
+    x_norm = normalise(x)
+    y_norm = normalise(y)
+    start = np.asarray([x_norm[0], y_norm[0]])
+    end = np.asarray([x_norm[-1], y_norm[-1]])
+    chord = end - start
+    chord_length = float(np.linalg.norm(chord))
+    distances = np.zeros(factors.size, dtype=float)
+    if chord_length > 1.0e-12:
+        for index in range(1, factors.size - 1):
+            point = np.asarray([x_norm[index], y_norm[index]])
+            offset = point - start
+            distances[index] = abs(float(chord[0] * offset[1] - chord[1] * offset[0])) / chord_length
+    selected_index = int(np.argmax(distances[1:-1])) + 1
+    selection = RegularizationSelectionResult(
+        selected_factor=float(factors[selected_index]),
+        candidate_factors=factors,
+        weighted_rmse_ms=misfit,
+        roughness_norm=roughness,
+        chord_distances=distances,
+    )
+    return selection, models[selected_index]
+
+
+def generate_velocity_uncertainty_ensemble(
+    central_result: InversionResult,
+    source_offset_m: float,
+    regularization: float,
+    ensemble_size: int = QUICK_ENSEMBLE_SIZE,
+    random_seed: int = DEFAULT_UNCERTAINTY_SEED,
+    robust_loss: str | None = None,
+    progress_callback: Any | None = None,
+) -> VelocityUncertaintyResult:
+    """Perturb arrivals by their 1-sigma uncertainties and reinvert repeatedly."""
+
+    requested = int(ensemble_size)
+    if requested < 1:
+        raise ValueError("The uncertainty ensemble must request at least one model.")
+    seed = int(random_seed)
+    if central_result.observation_std_s.size != central_result.depths_m.size:
+        raise ValueError("The central model does not contain one uncertainty for every observation.")
+    rng = np.random.default_rng(seed)
+    velocity_models: list[np.ndarray] = []
+    vs30_values: list[float] = []
+    failure_count = 0
+    selected_loss = robust_loss or central_result.robust_loss
+    for index in range(requested):
+        perturbed = central_result.observed_times_s + rng.normal(
+            0.0, central_result.observation_std_s, central_result.depths_m.size
+        )
+        if np.any(perturbed <= 0.0):
+            failure_count += 1
+            continue
+        try:
+            model = invert_velocity_profile(
+                central_result.depths_m,
+                perturbed,
+                source_offset_m,
+                regularization=regularization,
+                receiver_offsets_m=central_result.receiver_offsets_m,
+                observation_std_s=central_result.observation_std_s,
+                robust_loss=selected_loss,
+            )
+            velocity_models.append(model.velocities_mps)
+            try:
+                vs30_values.append(
+                    calculate_ts1170_5_method1_vs30(model.depths_m, model.velocities_mps).value_mps
+                )
+            except ValueError:
+                pass
+        except (ValueError, RayPathError, FloatingPointError):
+            failure_count += 1
+        if progress_callback is not None:
+            progress_callback(index + 1, requested)
+    minimum_success = max(3, int(math.ceil(0.80 * requested)))
+    if len(velocity_models) < minimum_success:
+        raise RayPathError(
+            f"Only {len(velocity_models)} of {requested} uncertainty models succeeded; "
+            f"at least {minimum_success} are required."
+        )
+    levels = (2.5, 50.0, 97.5)
+    velocity_array = np.asarray(velocity_models, dtype=float)
+    velocity_percentiles = np.percentile(velocity_array, levels, axis=0)
+    vs30_array = np.asarray(vs30_values, dtype=float)
+    if vs30_array.size:
+        vs30_percentiles = np.percentile(vs30_array, levels)
+        vs30_lower, vs30_median, vs30_upper = (float(value) for value in vs30_percentiles)
+    else:
+        vs30_lower = vs30_median = vs30_upper = None
+    warnings = []
+    if requested < REPORT_QUALITY_ENSEMBLE_MINIMUM:
+        warnings.append(
+            f"{requested} models provide a preliminary sensitivity preview; use at least "
+            f"{REPORT_QUALITY_ENSEMBLE_MINIMUM} models for report-quality percentile intervals."
+        )
+    if failure_count:
+        warnings.append(f"{failure_count} perturbed model(s) failed and were excluded from the percentiles.")
+    return VelocityUncertaintyResult(
+        random_seed=seed,
+        requested_models=requested,
+        successful_models=len(velocity_models),
+        percentile_levels=levels,
+        velocity_lower_mps=velocity_percentiles[0],
+        velocity_median_mps=velocity_percentiles[1],
+        velocity_upper_mps=velocity_percentiles[2],
+        vs30_samples_mps=vs30_array,
+        vs30_lower_mps=vs30_lower,
+        vs30_median_mps=vs30_median,
+        vs30_upper_mps=vs30_upper,
+        warnings=tuple(warnings),
+>>>>>>> Stashed changes
+    )
+
+
+def generate_layered_velocity_uncertainty_ensemble(
+    central_result: InversionResult,
+    source_offset_m: float,
+    ensemble_size: int = QUICK_ENSEMBLE_SIZE,
+    random_seed: int = DEFAULT_UNCERTAINTY_SEED,
+    robust_loss: str | None = None,
+    progress_callback: Any | None = None,
+) -> VelocityUncertaintyResult:
+    """Perturb picks and refit the same fixed interpreted layer geometry."""
+
+    if central_result.model_layer_bottoms_m.size == 0:
+        raise ValueError("The central result does not contain interpreted layer boundaries.")
+    requested = int(ensemble_size)
+    if requested < 1:
+        raise ValueError("The uncertainty ensemble must request at least one model.")
+    if central_result.observation_std_s.size != central_result.depths_m.size:
+        raise ValueError("The central model does not contain one uncertainty for every observation.")
+    seed = int(random_seed)
+    rng = np.random.default_rng(seed)
+    velocity_models: list[np.ndarray] = []
+    vs30_values: list[float] = []
+    failure_count = 0
+    selected_loss = robust_loss or central_result.robust_loss
+    for index in range(requested):
+        perturbed = central_result.observed_times_s + rng.normal(
+            0.0, central_result.observation_std_s, central_result.depths_m.size
+        )
+        if np.any(perturbed <= 0.0):
+            failure_count += 1
+            continue
+        try:
+            model = invert_layered_velocity_profile(
+                central_result.depths_m,
+                perturbed,
+                source_offset_m,
+                central_result.model_layer_bottoms_m,
+                receiver_offsets_m=central_result.receiver_offsets_m,
+                observation_std_s=central_result.observation_std_s,
+                robust_loss=selected_loss,
+            )
+            velocity_models.append(model.velocities_mps)
+            model_depths, model_velocities = result_model_profile(model)
+            try:
+                vs30_values.append(
+                    calculate_ts1170_5_method1_vs30(model_depths, model_velocities).value_mps
+                )
+            except ValueError:
+                pass
+        except (ValueError, RayPathError, FloatingPointError):
+            failure_count += 1
+        if progress_callback is not None:
+            progress_callback(index + 1, requested)
+    minimum_success = max(3, int(math.ceil(0.80 * requested)))
+    if len(velocity_models) < minimum_success:
+        raise RayPathError(
+            f"Only {len(velocity_models)} of {requested} layered uncertainty models succeeded; "
+            f"at least {minimum_success} are required."
+        )
+    levels = (2.5, 50.0, 97.5)
+    velocity_percentiles = np.percentile(np.asarray(velocity_models, dtype=float), levels, axis=0)
+    vs30_array = np.asarray(vs30_values, dtype=float)
+    if vs30_array.size:
+        vs30_lower, vs30_median, vs30_upper = (
+            float(value) for value in np.percentile(vs30_array, levels)
+        )
+    else:
+        vs30_lower = vs30_median = vs30_upper = None
+    warnings: list[str] = []
+    if requested < REPORT_QUALITY_ENSEMBLE_MINIMUM:
+        warnings.append(
+            f"{requested} models provide a preliminary sensitivity preview; use at least "
+            f"{REPORT_QUALITY_ENSEMBLE_MINIMUM} models for report-quality percentile intervals."
+        )
+    if failure_count:
+        warnings.append(f"{failure_count} perturbed layered model(s) failed and were excluded.")
+    return VelocityUncertaintyResult(
+        random_seed=seed,
+        requested_models=requested,
+        successful_models=len(velocity_models),
+        percentile_levels=levels,
+        velocity_lower_mps=velocity_percentiles[0],
+        velocity_median_mps=velocity_percentiles[1],
+        velocity_upper_mps=velocity_percentiles[2],
+        vs30_samples_mps=vs30_array,
+        vs30_lower_mps=vs30_lower,
+        vs30_median_mps=vs30_median,
+        vs30_upper_mps=vs30_upper,
+        warnings=tuple(warnings),
     )
 
 
@@ -1122,6 +2145,18 @@ class WaveformPickerDialog(QDialog):
         self.canvas.axes.set_xlim(max(full_left, left), min(full_right, right))
 
 
+<<<<<<< Updated upstream
+=======
+@dataclass(frozen=True)
+class InversionBatchResult:
+    """Central pick models and optional uncertainty for fixed interpreted layers."""
+
+    results: dict[str, InversionResult]
+    uncertainty_results: dict[str, VelocityUncertaintyResult]
+    layer_bottoms_m: np.ndarray
+
+
+>>>>>>> Stashed changes
 class InversionWorker(QObject):
     """Run one or more pick-based inversions away from the Qt GUI thread."""
 
@@ -1134,27 +2169,77 @@ class InversionWorker(QObject):
         depths_m: np.ndarray,
         times_by_pick_s: dict[str, np.ndarray],
         offset_m: float,
+<<<<<<< Updated upstream
         regularization: float,
+=======
+        receiver_offsets_m: np.ndarray,
+        layer_bottoms_m: np.ndarray,
+        observation_std_s: np.ndarray,
+        robust_loss: str,
+        selected_kind: str,
+        ensemble_size: int,
+        random_seed: int,
+>>>>>>> Stashed changes
     ) -> None:
         super().__init__()
         self.depths_m = depths_m
         self.times_by_pick_s = times_by_pick_s
         self.offset_m = offset_m
+<<<<<<< Updated upstream
         self.regularization = regularization
+=======
+        self.receiver_offsets_m = receiver_offsets_m
+        self.layer_bottoms_m = layer_bottoms_m
+        self.observation_std_s = observation_std_s
+        self.robust_loss = robust_loss
+        self.selected_kind = selected_kind
+        self.ensemble_size = ensemble_size
+        self.random_seed = random_seed
+>>>>>>> Stashed changes
 
     @Slot()
     def run(self) -> None:
         try:
             results: dict[str, InversionResult] = {}
             for kind, times_s in self.times_by_pick_s.items():
+<<<<<<< Updated upstream
                 results[kind] = invert_velocity_profile(
                     self.depths_m,
                     times_s,
                     self.offset_m,
                     self.regularization,
+=======
+                results[kind] = invert_layered_velocity_profile(
+                    self.depths_m,
+                    times_s,
+                    self.offset_m,
+                    self.layer_bottoms_m,
+>>>>>>> Stashed changes
                     lambda evaluations, rmse, pick_kind=kind: self.progress.emit(pick_kind, evaluations, rmse),
                 )
+<<<<<<< Updated upstream
             self.finished.emit(results)
+=======
+            uncertainty_results: dict[str, VelocityUncertaintyResult] = {}
+            if self.ensemble_size > 0:
+                uncertainty_results[self.selected_kind] = generate_layered_velocity_uncertainty_ensemble(
+                    results[self.selected_kind],
+                    self.offset_m,
+                    ensemble_size=self.ensemble_size,
+                    random_seed=self.random_seed,
+                    robust_loss=self.robust_loss,
+                    progress_callback=lambda complete, total: self.progress.emit(
+                        f"{self.selected_kind}:ensemble", complete, float(total)
+                    ),
+                )
+            self.finished.emit(
+                InversionBatchResult(
+                    results=results,
+                    uncertainty_results=uncertainty_results,
+                    layer_bottoms_m=self.layer_bottoms_m.copy(),
+                )
+            )
+>>>>>>> Stashed changes
         except Exception as exc:  # GUI boundary: present all solver/parser failures cleanly.
             self.failed.emit(str(exc), traceback.format_exc())
 
@@ -1171,6 +2256,14 @@ class RayPathMainWindow(QMainWindow):
         super().__init__()
         self.project_path: Path | None = None
         self.gru_path: Path | None = None
+<<<<<<< Updated upstream
+=======
+        self.gru_pre_trigger_ms: float | None = None
+        self.survey_geometry = SurveyGeometry()
+        self.active_geometry: CorrectedGeometry | None = None
+        self.active_layer_recorded_bottoms_m = np.empty(0, dtype=float)
+        self.active_layer_notes: list[str] = []
+>>>>>>> Stashed changes
         self.waveform_records: list[WaveformRecord] = []
         self.result: InversionResult | None = None
         self.comparison_results: dict[str, InversionResult] = {}
@@ -1178,7 +2271,12 @@ class RayPathMainWindow(QMainWindow):
         self.comparison_vs30_reasons: dict[str, str] = {}
         self.current_vs30: Vs30Result | None = None
         self.vs30_unavailable_reason: str | None = None
+<<<<<<< Updated upstream
         self.vs30_history: dict[tuple[str, float, float], float] = {}
+=======
+        self.uncertainty_results: dict[str, VelocityUncertaintyResult] = {}
+        self.picker_half_width_ms = DEFAULT_PICKER_HALF_WIDTH_MS
+>>>>>>> Stashed changes
         self._thread: QThread | None = None
         self._worker: InversionWorker | None = None
         self._dirty = False
@@ -1233,7 +2331,7 @@ class RayPathMainWindow(QMainWindow):
         heading_row = QHBoxLayout()
         title = QLabel(APP_NAME)
         title.setObjectName("appTitle")
-        subtitle = QLabel("Regularised forward ray-path inversion")
+        subtitle = QLabel("Interpretive layered forward ray-path inversion")
         subtitle.setObjectName("subtleLabel")
         heading_row.addWidget(title)
         heading_row.addSpacing(12)
@@ -1264,6 +2362,37 @@ class RayPathMainWindow(QMainWindow):
         self.vs30_status_label = QLabel("Vs30: — m/s")
         status.addPermanentWidget(self.vs30_status_label)
 
+<<<<<<< Updated upstream
+=======
+    @Slot(bool)
+    def _theme_changed(self, dark_mode: bool) -> None:
+        """Apply the selected theme to Qt widgets and all embedded plots."""
+
+        self.dark_mode = bool(dark_mode)
+        app = QApplication.instance()
+        if app is not None:
+            apply_application_theme(app, self.dark_mode)
+        canvases = (
+            self.velocity_canvas,
+            self.interval_canvas,
+            self.ray_canvas,
+            self.fit_canvas,
+            self.waterfall_canvas,
+            self.vs30_canvas,
+        )
+        for canvas in canvases:
+            canvas.set_dark_mode(self.dark_mode)
+        if self.waveform_records:
+            self._apply_waveform_review_to_input_table()
+        elif self.observation_review:
+            self._apply_saved_review_to_input_table()
+        self._update_geometry_status()
+        if self.result is None:
+            self._draw_empty_plots()
+        else:
+            self._draw_results(self.result)
+
+>>>>>>> Stashed changes
     def _build_input_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("panel")
@@ -1327,27 +2456,99 @@ class RayPathMainWindow(QMainWindow):
         table_buttons.addWidget(paste_button)
         layout.addLayout(table_buttons)
 
-        smooth_label_row = QHBoxLayout()
-        smooth_label_row.addWidget(QLabel("Smoothing / regularisation"))
-        self.reg_value_label = QLabel("0.35")
-        self.reg_value_label.setObjectName("accentLabel")
-        smooth_label_row.addStretch()
-        smooth_label_row.addWidget(self.reg_value_label)
-        layout.addLayout(smooth_label_row)
-        self.reg_slider = QSlider(Qt.Orientation.Horizontal)
-        self.reg_slider.setRange(0, 100)
-        self.reg_slider.setValue(35)
-        self.reg_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.reg_slider.setTickInterval(10)
-        self.reg_slider.valueChanged.connect(self._regularization_changed)
-        layout.addWidget(self.reg_slider)
-        endpoints = QHBoxLayout()
-        endpoints.addWidget(QLabel("0.00  fit detail"))
-        endpoints.addStretch()
-        endpoints.addWidget(QLabel("1.00  smoother"))
-        layout.addLayout(endpoints)
+        layer_heading = QLabel("Interpreted geological layers")
+        layer_heading.setObjectName("minorTitle")
+        layout.addWidget(layer_heading)
+        layer_note = QLabel(
+            "Enter internal layer bottoms using recorded receiver depth. The deepest receiver closes the final "
+            "layer automatically. One constant Vs is fitted per layer; no smoothing is applied."
+        )
+        layer_note.setObjectName("subtleLabel")
+        layer_note.setWordWrap(True)
+        layout.addWidget(layer_note)
+        self.layer_boundary_table = QTableWidget(0, 2)
+        self.layer_boundary_table.setHorizontalHeaderLabels(
+            ["Internal bottom depth (m)", "Interpretive basis / unit"]
+        )
+        self.layer_boundary_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.layer_boundary_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.layer_boundary_table.verticalHeader().setVisible(False)
+        self.layer_boundary_table.setMinimumHeight(105)
+        self.layer_boundary_table.setMaximumHeight(155)
+        self.layer_boundary_table.itemChanged.connect(self._layer_boundaries_changed)
+        layout.addWidget(self.layer_boundary_table)
+        layer_buttons = QHBoxLayout()
+        self.add_selected_boundary_button = QPushButton("Use Selected Depth")
+        self.add_selected_boundary_button.setToolTip(
+            "Add the receiver depth selected in the observations table as an interpreted layer bottom."
+        )
+        self.add_selected_boundary_button.clicked.connect(self._add_selected_layer_boundary)
+        self.add_boundary_button = QPushButton("+ Boundary")
+        self.add_boundary_button.clicked.connect(self._add_blank_layer_boundary)
+        self.remove_boundary_button = QPushButton("- Boundary")
+        self.remove_boundary_button.clicked.connect(self._remove_layer_boundaries)
+        self.clear_boundary_button = QPushButton("Clear")
+        self.clear_boundary_button.clicked.connect(self._clear_layer_boundaries)
+        layer_buttons.addWidget(self.add_selected_boundary_button)
+        layer_buttons.addWidget(self.add_boundary_button)
+        layer_buttons.addWidget(self.remove_boundary_button)
+        layer_buttons.addWidget(self.clear_boundary_button)
+        layout.addLayout(layer_buttons)
 
+<<<<<<< Updated upstream
         self.run_button = QPushButton("Run RayPath Inversion")
+=======
+        inversion_options = QFormLayout()
+        self.robust_loss_combo = QComboBox()
+        self.robust_loss_combo.addItem("Linear weighted least squares", "linear")
+        self.robust_loss_combo.addItem("Huber robust loss (1.5σ)", "huber")
+        self.robust_loss_combo.currentIndexChanged.connect(self._inversion_option_changed)
+        inversion_options.addRow("Data loss", self.robust_loss_combo)
+        self.manual_uncertainty_spin = QDoubleSpinBox()
+        self.manual_uncertainty_spin.setRange(0.001, 50.0)
+        self.manual_uncertainty_spin.setDecimals(3)
+        self.manual_uncertainty_spin.setValue(DEFAULT_MANUAL_PICK_UNCERTAINTY_MS)
+        self.manual_uncertainty_spin.setSuffix(" ms (1σ)")
+        self.manual_uncertainty_spin.setToolTip(
+            "Fallback one-standard-deviation uncertainty for manual/CSV observations and any GRU interval "
+            "without a recorded per-depth value."
+        )
+        self.manual_uncertainty_spin.valueChanged.connect(self._inversion_option_changed)
+        inversion_options.addRow("Fallback uncertainty", self.manual_uncertainty_spin)
+        ensemble_controls = QWidget()
+        ensemble_controls_layout = QHBoxLayout(ensemble_controls)
+        ensemble_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.ensemble_preset_combo = QComboBox()
+        self.ensemble_preset_combo.addItem("Off - fastest", DEFAULT_ENSEMBLE_SIZE)
+        self.ensemble_preset_combo.addItem("Quick preview - 20 (preliminary)", QUICK_ENSEMBLE_SIZE)
+        self.ensemble_preset_combo.addItem("Final report - 200", FINAL_ENSEMBLE_SIZE)
+        self.ensemble_preset_combo.addItem("Custom count", -1)
+        self.ensemble_preset_combo.setToolTip(
+            "Keep uncertainty sampling off while reviewing picks and layer boundaries. The 20-model preview is "
+            "preliminary; use at least 100 models for a report-quality percentile interval."
+        )
+        ensemble_controls_layout.addWidget(self.ensemble_preset_combo, 1)
+        self.ensemble_size_spin = QSpinBox()
+        self.ensemble_size_spin.setRange(0, 500)
+        self.ensemble_size_spin.setValue(DEFAULT_ENSEMBLE_SIZE)
+        self.ensemble_size_spin.setSpecialValueText("Off")
+        self.ensemble_size_spin.setFixedWidth(80)
+        self.ensemble_size_spin.setToolTip("Custom number of pick-time perturbation models (maximum 500).")
+        self.ensemble_size_spin.setVisible(False)
+        ensemble_controls_layout.addWidget(self.ensemble_size_spin)
+        self.ensemble_preset_combo.currentIndexChanged.connect(self._ensemble_preset_changed)
+        self.ensemble_size_spin.valueChanged.connect(self._ensemble_size_changed)
+        inversion_options.addRow("Uncertainty ensemble", ensemble_controls)
+        self.uncertainty_seed_spin = QSpinBox()
+        self.uncertainty_seed_spin.setRange(0, 2_147_483_647)
+        self.uncertainty_seed_spin.setValue(DEFAULT_UNCERTAINTY_SEED)
+        self.uncertainty_seed_spin.setToolTip("Stored random seed used to make uncertainty bands exactly repeatable.")
+        self.uncertainty_seed_spin.valueChanged.connect(self._inversion_option_changed)
+        inversion_options.addRow("Random seed", self.uncertainty_seed_spin)
+        layout.addLayout(inversion_options)
+
+        self.run_button = QPushButton("Run Layered RayPath Inversion")
+>>>>>>> Stashed changes
         self.run_button.setObjectName("primaryButton")
         self.run_button.setMinimumHeight(48)
         self.run_button.clicked.connect(self.run_inversion)
@@ -1363,10 +2564,12 @@ class RayPathMainWindow(QMainWindow):
         layout.addWidget(heading)
         self.plot_tabs = QTabWidget()
         self.velocity_canvas = MplCanvas()
+        self.interval_canvas = MplCanvas()
         self.ray_canvas = MplCanvas()
         self.fit_canvas = MplCanvas()
         self.waterfall_canvas = MplCanvas()
         self.plot_tabs.addTab(self.velocity_canvas, "Velocity Profile")
+        self.plot_tabs.addTab(self.interval_canvas, "1 m Interval Comparison")
         self.plot_tabs.addTab(self.ray_canvas, "Ray Paths")
         self.plot_tabs.addTab(self.fit_canvas, "Arrival-Time Fit")
         self.plot_tabs.addTab(self.waterfall_canvas, "Waveform Waterfall")
@@ -1376,7 +2579,7 @@ class RayPathMainWindow(QMainWindow):
         return panel
 
     def _build_vs30_tab(self) -> QWidget:
-        """Create the Vs30 value and smoothing-sensitivity comparison view."""
+        """Create the Vs30 value and pick-interpretation comparison view."""
 
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -1385,9 +2588,9 @@ class RayPathMainWindow(QMainWindow):
         self.vs30_value_label.setObjectName("vs30Value")
         metric_row.addWidget(self.vs30_value_label)
         metric_row.addStretch()
-        self.vs30_smoothing_label = QLabel("Smoothing: —")
-        self.vs30_smoothing_label.setObjectName("accentLabel")
-        metric_row.addWidget(self.vs30_smoothing_label)
+        self.vs30_layer_label = QLabel("Interpreted layers: —")
+        self.vs30_layer_label.setObjectName("accentLabel")
+        metric_row.addWidget(self.vs30_layer_label)
         layout.addLayout(metric_row)
         self.vs30_comparison_label = QLabel("First peak: —   |   First cross: —   |   Maximum peak: —")
         self.vs30_comparison_label.setObjectName("minorTitle")
@@ -1478,10 +2681,18 @@ class RayPathMainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} — {name}{' *' if dirty else ''}")
 
     def _input_changed(self, *_args: Any) -> None:
+<<<<<<< Updated upstream
         if self.result is not None or self.vs30_history or self.result_table.rowCount() > 0:
+=======
+        self.active_geometry = None
+        self.active_layer_recorded_bottoms_m = np.empty(0, dtype=float)
+        self.active_layer_notes = []
+        if self.result is not None or self.result_table.rowCount() > 0:
+>>>>>>> Stashed changes
             self._clear_results(clear_vs30_history=True)
         self._set_dirty(True)
 
+<<<<<<< Updated upstream
     def _regularization_changed(self, value: int) -> None:
         self.reg_value_label.setText(f"{value / 100.0:.2f}")
         self._clear_results(clear_vs30_history=False)
@@ -1489,6 +2700,45 @@ class RayPathMainWindow(QMainWindow):
             self.vs30_detail_label.setText(
                 "Smoothing changed. Run the inversion to add this setting to the Vs30 comparison."
             )
+=======
+    def _ensemble_preset_changed(self, _index: int) -> None:
+        """Apply an Off, preview, final, or custom ensemble preset."""
+
+        preset = int(self.ensemble_preset_combo.currentData())
+        if preset >= 0:
+            self.ensemble_size_spin.blockSignals(True)
+            self.ensemble_size_spin.setValue(preset)
+            self.ensemble_size_spin.blockSignals(False)
+            self.ensemble_size_spin.setVisible(False)
+        else:
+            if self.ensemble_size_spin.value() in {
+                DEFAULT_ENSEMBLE_SIZE,
+                QUICK_ENSEMBLE_SIZE,
+                FINAL_ENSEMBLE_SIZE,
+            }:
+                self.ensemble_size_spin.blockSignals(True)
+                self.ensemble_size_spin.setValue(50)
+                self.ensemble_size_spin.blockSignals(False)
+            self.ensemble_size_spin.setVisible(True)
+        self._inversion_option_changed()
+
+    def _ensemble_size_changed(self, value: int) -> None:
+        """Keep the preset label synchronized with a loaded or custom count."""
+
+        preset = value if value in {DEFAULT_ENSEMBLE_SIZE, QUICK_ENSEMBLE_SIZE, FINAL_ENSEMBLE_SIZE} else -1
+        index = self.ensemble_preset_combo.findData(preset)
+        self.ensemble_preset_combo.blockSignals(True)
+        self.ensemble_preset_combo.setCurrentIndex(max(0, index))
+        self.ensemble_preset_combo.blockSignals(False)
+        self.ensemble_size_spin.setVisible(preset == -1)
+        self._inversion_option_changed()
+
+    def _inversion_option_changed(self, *_args: Any) -> None:
+        """Invalidate results when weighting, loss, selection, or ensemble settings change."""
+
+        if self.result is not None:
+            self._clear_results(clear_vs30_history=False)
+>>>>>>> Stashed changes
         self._set_dirty(True)
 
     def _extrapolation_weight_factor(self) -> float:
@@ -1525,14 +2775,33 @@ class RayPathMainWindow(QMainWindow):
 
         self.waveform_records = []
         self.gru_path = None
+<<<<<<< Updated upstream
         self.review_action.setEnabled(False)
+=======
+        self.gru_pre_trigger_ms = None
+        self.survey_geometry = SurveyGeometry()
+        self.active_geometry = None
+        self.active_layer_recorded_bottoms_m = np.empty(0, dtype=float)
+        self.active_layer_notes = []
+        self._set_waveform_review_available(False)
+>>>>>>> Stashed changes
         self.gru_label.setText("No GRU source loaded")
         self.input_table.blockSignals(True)
         self.input_table.clearContents()
         self.input_table.setRowCount(8)
         self.input_table.blockSignals(False)
         self.offset_spin.setValue(2.4)
+<<<<<<< Updated upstream
         self.reg_slider.setValue(35)
+=======
+        self.layer_boundary_table.blockSignals(True)
+        self.layer_boundary_table.setRowCount(0)
+        self.layer_boundary_table.blockSignals(False)
+        self.robust_loss_combo.setCurrentIndex(0)
+        self.manual_uncertainty_spin.setValue(DEFAULT_MANUAL_PICK_UNCERTAINTY_MS)
+        self.ensemble_size_spin.setValue(DEFAULT_ENSEMBLE_SIZE)
+        self.uncertainty_seed_spin.setValue(DEFAULT_UNCERTAINTY_SEED)
+>>>>>>> Stashed changes
         self.estimator_combo.setCurrentIndex(1)
         self.extrapolation_weight_slider.setValue(0)
         self._clear_results()
@@ -1574,7 +2843,7 @@ class RayPathMainWindow(QMainWindow):
         self.input_table.blockSignals(False)
 
     def _clear_results(self, clear_vs30_history: bool = True) -> None:
-        """Clear the active model, optionally retaining smoothing comparisons."""
+        """Clear the active model; the argument is retained for legacy callers."""
 
         self.result = None
         self.comparison_results.clear()
@@ -1582,8 +2851,12 @@ class RayPathMainWindow(QMainWindow):
         self.comparison_vs30_reasons.clear()
         self.current_vs30 = None
         self.vs30_unavailable_reason = None
+<<<<<<< Updated upstream
         if clear_vs30_history:
             self.vs30_history.clear()
+=======
+        self.uncertainty_results.clear()
+>>>>>>> Stashed changes
         self.result_table.setRowCount(0)
         self.result_summary.setText("Run the inversion to calculate a layered Vs profile.")
         self.rmse_label.setText("RMSE: — ms")
@@ -1594,6 +2867,12 @@ class RayPathMainWindow(QMainWindow):
     def _draw_empty_plots(self) -> None:
         configurations = (
             (self.velocity_canvas, "Velocity profile", "Vs (m/s)", "Depth (m)"),
+            (
+                self.interval_canvas,
+                "Staggered 1 m observed interval comparison",
+                "Vs (m/s)",
+                "Corrected vertical depth (m)",
+            ),
             (self.ray_canvas, "Refracted ray paths", "Horizontal distance (m)", "Depth (m)"),
             (self.fit_canvas, "Observed and calculated arrivals", "Arrival time (ms)", "Depth (m)"),
         )
@@ -1717,6 +2996,7 @@ class RayPathMainWindow(QMainWindow):
         )
 
     def _draw_vs30_analysis(self) -> None:
+<<<<<<< Updated upstream
         """Draw the current Vs30 result and smoothing-sensitivity history."""
 
         ax = self.vs30_canvas.axes
@@ -1741,41 +3021,65 @@ class RayPathMainWindow(QMainWindow):
             all_values.extend(values.tolist())
             ax.plot(
                 factors,
+=======
+        """Draw Method 1 Vs30 across picks for the fixed interpreted layers."""
+
+        ax = self.vs30_canvas.axes
+        self.vs30_canvas.clear()
+        ax.set_title("TS 1170.5:2025 Method 1 Vs30 by pick interpretation")
+        ax.set_ylabel("Vs30 (m/s)")
+        available = [kind for kind in PICK_KINDS if self.comparison_vs30.get(kind) is not None]
+        if available:
+            values = np.asarray([self.comparison_vs30[kind].value_mps for kind in available], dtype=float)
+            lower = np.asarray([self.comparison_vs30[kind].lower_bound_mps for kind in available], dtype=float)
+            upper = np.asarray([self.comparison_vs30[kind].upper_bound_mps for kind in available], dtype=float)
+            positions = np.arange(len(available), dtype=float)
+            ax.bar(
+                positions,
+>>>>>>> Stashed changes
                 values,
-                "-o",
-                color=MODEL_COLORS[kind],
-                linewidth=1.8,
-                markersize=5,
-                label=PICK_LABELS[kind],
+                color=[MODEL_COLORS[kind] for kind in available],
+                alpha=0.82,
+                width=0.68,
             )
-        if all_factors:
-            minimum_factor = min(all_factors)
-            maximum_factor = max(all_factors)
-            if math.isclose(minimum_factor, maximum_factor):
-                ax.set_xlim(max(0.0, minimum_factor - 0.1), min(1.0, maximum_factor + 0.1))
-            else:
-                margin = max(0.03, (maximum_factor - minimum_factor) * 0.08)
-                ax.set_xlim(max(0.0, minimum_factor - margin), min(1.0, maximum_factor + margin))
-            values_array = np.asarray(all_values, dtype=float)
-            value_span = float(np.ptp(values_array))
-            value_margin = max(5.0, value_span * 0.15)
-            ax.set_ylim(
-                max(0.0, float(np.min(values_array)) - value_margin),
-                float(np.max(values_array)) + value_margin,
+            ax.errorbar(
+                positions,
+                values,
+                yerr=np.vstack([values - lower, upper - values]),
+                fmt="none",
+                ecolor=self.vs30_canvas.foreground_color,
+                elinewidth=1.0,
+                capsize=4,
             )
+<<<<<<< Updated upstream
             ax.legend(facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
+=======
+            ax.set_xticks(positions, [PICK_LABELS[kind] for kind in available], rotation=12, ha="right")
+            value_span = float(np.ptp(np.r_[lower, upper]))
+            margin = max(8.0, value_span * 0.15)
+            ax.set_ylim(max(0.0, float(np.min(lower)) - margin), float(np.max(upper)) + margin)
+>>>>>>> Stashed changes
         else:
             ax.text(
                 0.5,
                 0.5,
-                "Run an inversion extending to at least 25 m\nto calculate or extrapolate Vs30",
+                "Run a layered model extending to at least 25 m\nto calculate or extrapolate Vs30",
                 transform=ax.transAxes,
                 ha="center",
                 va="center",
                 color="#8b949e",
             )
-            ax.set_xlim(0.0, 1.0)
+            ax.set_xticks([])
+        layer_count = (
+            int(self.result.model_layer_bottoms_m.size)
+            if self.result is not None and self.result.model_layer_bottoms_m.size
+            else 0
+        )
+        self.vs30_layer_label.setText(
+            f"Interpreted layers: {layer_count}" if layer_count else "Interpreted layers: —"
+        )
         if self.current_vs30 is not None:
+<<<<<<< Updated upstream
             factor = self.reg_slider.value() / 100.0
             self.vs30_value_label.setText(f"Vs30: {self.current_vs30.value_mps:.1f} m/s")
             self.vs30_smoothing_label.setText(f"Smoothing: {factor:.2f}")
@@ -1786,6 +3090,19 @@ class RayPathMainWindow(QMainWindow):
                     f"{self.current_vs30.extrapolated_velocity_mps:.1f} m/s using weighting factor "
                     f"{self.current_vs30.extrapolation_weight_factor:.2f}. Total vertical travel time: "
                     f"{self.current_vs30.vertical_travel_time_s * 1000.0:.2f} ms."
+=======
+            bands = ", ".join(self.current_vs30.indicative_vs30_bands)
+            self.vs30_value_label.setText(
+                f"TS Method 1 Vs30: {self.current_vs30.value_mps:.1f} m/s "
+                f"({self.current_vs30.lower_bound_mps:.1f}–{self.current_vs30.upper_bound_mps:.1f})"
+            )
+            extrapolation_note = (
+                "No extension was required because the profile reaches at least 30 m."
+                if self.current_vs30.extrapolated_thickness_m <= 0.0
+                else (
+                    f"The last measured layer was extended {self.current_vs30.extrapolated_thickness_m:.2f} m "
+                    f"at {self.current_vs30.extrapolated_velocity_mps:.1f} m/s."
+>>>>>>> Stashed changes
                 )
             else:
                 self.vs30_detail_label.setText(
@@ -1793,18 +3110,30 @@ class RayPathMainWindow(QMainWindow):
                     "The modeled profile reaches 30 m, so extrapolation weighting is not applied."
                 )
         elif self.vs30_unavailable_reason:
+<<<<<<< Updated upstream
             self.vs30_value_label.setText("Vs30: unavailable")
             self.vs30_smoothing_label.setText(f"Smoothing: {self.reg_slider.value() / 100.0:.2f}")
             self.vs30_detail_label.setText(self.vs30_unavailable_reason)
         elif not all_factors:
             self.vs30_value_label.setText("Vs30: — m/s")
             self.vs30_smoothing_label.setText("Smoothing: —")
+=======
+            self.vs30_value_label.setText("TS Method 1 Vs30: unavailable")
+            self.vs30_detail_label.setText(self.vs30_unavailable_reason)
+        elif not available:
+            self.vs30_value_label.setText("TS Method 1 Vs30: — m/s")
+>>>>>>> Stashed changes
             self.vs30_detail_label.setText(
-                "Run a model extending to at least 25 m. Change smoothing and rerun to build a comparison."
+                "Run a layered model extending to at least 25 m. Revise the interpreted boundaries and rerun "
+                "to compare a different geological model."
             )
         else:
+<<<<<<< Updated upstream
             self.vs30_value_label.setText("Vs30: rerun required")
             self.vs30_smoothing_label.setText(f"Selected smoothing: {self.reg_slider.value() / 100.0:.2f}")
+=======
+            self.vs30_value_label.setText("TS Method 1 Vs30: rerun required")
+>>>>>>> Stashed changes
         comparison_parts = []
         for kind in PICK_KINDS:
             value = self.comparison_vs30.get(kind)
@@ -1826,6 +3155,132 @@ class RayPathMainWindow(QMainWindow):
             self.input_table.removeRow(row)
         if rows:
             self._input_changed()
+
+    def _layer_boundaries_changed(self, *_args: Any) -> None:
+        """Invalidate the model when the analyst changes layer geometry."""
+
+        self.active_layer_recorded_bottoms_m = np.empty(0, dtype=float)
+        self.active_layer_notes = []
+        if self.result is not None:
+            self._clear_results(clear_vs30_history=True)
+        self._set_dirty(True)
+
+    def _add_selected_layer_boundary(self) -> None:
+        """Add the selected receiver depth as an internal interpreted boundary."""
+
+        row = self.input_table.currentRow()
+        item = self.input_table.item(row, 0) if row >= 0 else None
+        if item is None or not item.text().strip():
+            QMessageBox.information(
+                self,
+                "Select a receiver depth",
+                "Select a populated observation row before adding its depth as a layer boundary.",
+            )
+            return
+        try:
+            depth = float(item.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid receiver depth", "The selected receiver depth is not numeric.")
+            return
+        self._insert_layer_boundary(depth, "Boundary selected from receiver observations")
+
+    def _add_blank_layer_boundary(self) -> None:
+        """Append an editable blank boundary row."""
+
+        row = self.layer_boundary_table.rowCount()
+        self.layer_boundary_table.insertRow(row)
+        self.layer_boundary_table.setItem(row, 0, QTableWidgetItem(""))
+        self.layer_boundary_table.setItem(row, 1, QTableWidgetItem(""))
+        self.layer_boundary_table.setCurrentCell(row, 0)
+        self.layer_boundary_table.editItem(self.layer_boundary_table.item(row, 0))
+        self._layer_boundaries_changed()
+
+    def _insert_layer_boundary(self, depth_m: float, note: str = "") -> None:
+        row = self.layer_boundary_table.rowCount()
+        self.layer_boundary_table.blockSignals(True)
+        self.layer_boundary_table.insertRow(row)
+        self.layer_boundary_table.setItem(row, 0, QTableWidgetItem(f"{depth_m:.3f}"))
+        self.layer_boundary_table.setItem(row, 1, QTableWidgetItem(note))
+        self.layer_boundary_table.blockSignals(False)
+        self._layer_boundaries_changed()
+
+    def _remove_layer_boundaries(self) -> None:
+        rows = sorted({index.row() for index in self.layer_boundary_table.selectedIndexes()}, reverse=True)
+        if not rows and self.layer_boundary_table.currentRow() >= 0:
+            rows = [self.layer_boundary_table.currentRow()]
+        for row in rows:
+            self.layer_boundary_table.removeRow(row)
+        if rows:
+            self._layer_boundaries_changed()
+
+    def _clear_layer_boundaries(self) -> None:
+        if self.layer_boundary_table.rowCount() == 0:
+            return
+        self.layer_boundary_table.setRowCount(0)
+        self._layer_boundaries_changed()
+
+    def _read_layer_boundaries_recorded(
+        self, deepest_recorded_depth_m: float
+    ) -> tuple[np.ndarray, list[str]]:
+        """Return sorted analyst-entered internal boundaries and their basis."""
+
+        entries: list[tuple[float, str]] = []
+        invalid_rows: list[str] = []
+        for row in range(self.layer_boundary_table.rowCount()):
+            depth_item = self.layer_boundary_table.item(row, 0)
+            note_item = self.layer_boundary_table.item(row, 1)
+            depth_text = depth_item.text().strip() if depth_item else ""
+            note = note_item.text().strip() if note_item else ""
+            try:
+                depth = float(depth_text)
+                if (
+                    not math.isfinite(depth)
+                    or depth <= 0.0
+                    or depth >= float(deepest_recorded_depth_m) - 1.0e-6
+                ):
+                    raise ValueError
+                entries.append((depth, note))
+            except ValueError:
+                invalid_rows.append(str(row + 1))
+        if invalid_rows:
+            raise ValueError(
+                "Layer-boundary rows "
+                + ", ".join(invalid_rows)
+                + " must contain a positive depth shallower than the deepest receiver."
+            )
+        entries.sort(key=lambda item: item[0])
+        depths = np.asarray([entry[0] for entry in entries], dtype=float)
+        if depths.size and np.any(np.diff(depths) <= 1.0e-6):
+            raise ValueError("Interpreted layer-boundary depths must be unique.")
+        return depths, [entry[1] for entry in entries]
+
+    def _corrected_interpreted_layers(
+        self,
+        recorded_depths_m: np.ndarray,
+        corrected_geometry: CorrectedGeometry,
+    ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+        """Map recorded-depth boundaries to corrected vertical layer bottoms."""
+
+        internal_recorded, notes = self._read_layer_boundaries_recorded(float(recorded_depths_m[-1]))
+        all_recorded = np.r_[internal_recorded, recorded_depths_m[-1]]
+        corrected_bottoms = np.interp(
+            all_recorded,
+            np.r_[0.0, corrected_geometry.recorded_depths_m],
+            np.r_[0.0, corrected_geometry.vertical_depths_m],
+        )
+        if corrected_bottoms.size >= recorded_depths_m.size:
+            raise ValueError(
+                "The interpretation has as many layers as observations. Remove at least one internal boundary."
+            )
+        receiver_layer = np.searchsorted(all_recorded, recorded_depths_m, side="left")
+        counts = np.bincount(receiver_layer, minlength=all_recorded.size)
+        if np.any(counts < 2):
+            sparse = ", ".join(str(index + 1) for index in np.flatnonzero(counts < 2))
+            raise ValueError(
+                f"Interpreted layer(s) {sparse} contain fewer than two receiver observations. Revise the "
+                "boundaries so every fitted layer is supported by at least two observations."
+            )
+        return all_recorded, corrected_bottoms, [*notes, "Final layer to deepest receiver"]
 
     def _read_input_rows(self, pick_kind: str | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Read depth and one selected pick-time column."""
@@ -1969,6 +3424,21 @@ class RayPathMainWindow(QMainWindow):
         self.gru_label.setText(
             f"{path.name} — {len(records)} paired seismic records — {GRU_PRE_TRIGGER_MS:g} ms pre-trigger corrected"
         )
+<<<<<<< Updated upstream
+=======
+        self.gru_label.setToolTip("\n".join(import_messages))
+        if import_messages:
+            self.gru_label.setText(
+                f"{self.gru_label.text()}; {len(import_messages)} import note(s)"
+            )
+        if imported_deviation_points:
+            self.gru_label.setText(
+                f"{self.gru_label.text()}; cone tilt imported for {len(imported_deviation_points)} intervals"
+            )
+        self.layer_boundary_table.blockSignals(True)
+        self.layer_boundary_table.setRowCount(0)
+        self.layer_boundary_table.blockSignals(False)
+>>>>>>> Stashed changes
         self._populate_table_from_picks()
         self._clear_results()
         self.status_label.setText(
@@ -2035,6 +3505,9 @@ class RayPathMainWindow(QMainWindow):
         self.project_path = None
         self.review_action.setEnabled(False)
         self.gru_label.setText(f"{path.name} — CSV observations")
+        self.layer_boundary_table.blockSignals(True)
+        self.layer_boundary_table.setRowCount(0)
+        self.layer_boundary_table.blockSignals(False)
         self._set_all_pick_rows(rows)
         self._clear_results()
         self.status_label.setText(f"Imported {len(rows)} CSV observations")
@@ -2048,6 +3521,16 @@ class RayPathMainWindow(QMainWindow):
             for kind, column in PICK_COLUMNS.items():
                 item[f"{kind}_ms"] = self.input_table.item(row, column).text() if self.input_table.item(row, column) else ""
             inputs.append(item)
+        interpreted_boundaries = []
+        for row in range(self.layer_boundary_table.rowCount()):
+            depth_item = self.layer_boundary_table.item(row, 0)
+            note_item = self.layer_boundary_table.item(row, 1)
+            interpreted_boundaries.append(
+                {
+                    "bottom_recorded_depth_m": depth_item.text().strip() if depth_item else "",
+                    "interpretive_basis": note_item.text().strip() if note_item else "",
+                }
+            )
         payload: dict[str, Any] = {
             "format": "RayPath SCPT Project",
             "version": 3,
@@ -2055,9 +3538,25 @@ class RayPathMainWindow(QMainWindow):
             "gru_pre_trigger_ms": GRU_PRE_TRIGGER_MS,
             "pick_time_reference": "relative_to_trigger",
             "source_offset_m": self.offset_spin.value(),
+<<<<<<< Updated upstream
             "regularization": self.reg_slider.value() / 100.0,
+=======
+            "survey_geometry": self.survey_geometry.to_dict(),
+            "geometry_audit": geometry_audit,
+            "model_parameterization": "analyst_defined_piecewise_constant_layers",
+            "smoothing_status": "disabled",
+            "interpreted_layer_boundaries": interpreted_boundaries,
+            "robust_loss": str(self.robust_loss_combo.currentData()),
+            "fallback_pick_uncertainty_ms": self.manual_uncertainty_spin.value(),
+            "uncertainty_ensemble_size": self.ensemble_size_spin.value(),
+            "uncertainty_ensemble_classification": uncertainty_ensemble_classification(
+                self.ensemble_size_spin.value()
+            ),
+            "uncertainty_random_seed": self.uncertainty_seed_spin.value(),
+>>>>>>> Stashed changes
             "vs30_extrapolation_weight_factor": self._extrapolation_weight_factor(),
             "arrival_estimator": self.estimator_combo.currentData(),
+<<<<<<< Updated upstream
             "vs30_history": [
                 {
                     "pick_kind": kind,
@@ -2067,6 +3566,8 @@ class RayPathMainWindow(QMainWindow):
                 }
                 for (kind, smoothing, weighting), value in sorted(self.vs30_history.items())
             ],
+=======
+>>>>>>> Stashed changes
             "gru_source": str(self.gru_path) if self.gru_path else None,
             "inputs": inputs,
             "picks": [
@@ -2081,13 +3582,111 @@ class RayPathMainWindow(QMainWindow):
         if self.result is not None:
             payload["last_result"] = {
                 "velocities_mps": self.result.velocities_mps.tolist(),
+                "interpreted_layer_bottoms_corrected_m": self.result.model_layer_bottoms_m.tolist(),
+                "interpreted_layer_bottoms_recorded_m": self.active_layer_recorded_bottoms_m.tolist(),
+                "interpreted_layer_velocities_mps": self.result.model_layer_velocities_mps.tolist(),
+                "interpreted_layer_notes": list(self.active_layer_notes),
+                "interpreted_layer_resolution": self.result.model_layer_resolution.tolist(),
+                "interpreted_layer_bound_active": self.result.model_layer_bound_active.tolist(),
                 "calculated_times_ms": (self.result.calculated_times_s * 1000.0).tolist(),
                 "rmse_ms": self.result.rmse_s * 1000.0,
+<<<<<<< Updated upstream
+=======
+                "weighted_rmse_ms": self.result.weighted_rmse_s * 1000.0,
+                "data_cost_ms2": self.result.data_cost_ms2,
+                "regularization_contribution": self.result.regularization_cost,
+                "model_penalty_contribution": 0.0,
+                "roughness_norm": self.result.roughness_norm,
+                "objective_value": self.result.objective_value,
+                "robust_loss": self.result.robust_loss,
+                "observation_std_ms": (self.result.observation_std_s * 1000.0).tolist(),
+                "standardized_residuals": self.result.standardized_residuals.tolist(),
+                "resolution_diagonal": self.result.resolution_diagonal.tolist(),
+                "observation_leverage": self.result.observation_leverage.tolist(),
+                "influence_scores": self.result.influence_scores.tolist(),
+                "outlier_flags": self.result.outlier_flags.tolist(),
+                "influential_flags": self.result.influential_flags.tolist(),
+                "bound_active_flags": self.result.bound_active_flags.tolist(),
+                "diagnostic_warnings": list(self.result.warnings),
+>>>>>>> Stashed changes
                 "vs30_mps": self.current_vs30.value_mps if self.current_vs30 is not None else None,
                 "vs30_extrapolated_velocity_mps": (
                     self.current_vs30.extrapolated_velocity_mps if self.current_vs30 is not None else None
                 ),
             }
+<<<<<<< Updated upstream
+=======
+            selected_kind = str(self.estimator_combo.currentData())
+            ensemble = self.uncertainty_results.get(selected_kind)
+            if ensemble is not None:
+                payload["last_result"]["uncertainty_ensemble"] = {
+                    "pick_kind": selected_kind,
+                    "random_seed": ensemble.random_seed,
+                    "requested_models": ensemble.requested_models,
+                    "successful_models": ensemble.successful_models,
+                    "classification": uncertainty_ensemble_classification(ensemble.requested_models),
+                    "percentile_levels": list(ensemble.percentile_levels),
+                    "velocity_lower_mps": ensemble.velocity_lower_mps.tolist(),
+                    "velocity_median_mps": ensemble.velocity_median_mps.tolist(),
+                    "velocity_upper_mps": ensemble.velocity_upper_mps.tolist(),
+                    "vs30_lower_mps": ensemble.vs30_lower_mps,
+                    "vs30_median_mps": ensemble.vs30_median_mps,
+                    "vs30_upper_mps": ensemble.vs30_upper_mps,
+                    "warnings": list(ensemble.warnings),
+                }
+            try:
+                interval_comparison = self._interval_comparison_for_result(self.result)
+
+                def interval_series_payload(series: IntervalVelocitySeries) -> dict[str, Any]:
+                    def nullable(values: np.ndarray) -> list[float | None]:
+                        return [float(value) if math.isfinite(float(value)) else None for value in values]
+
+                    return {
+                        "recorded_top_depths_m": series.recorded_top_depths_m.tolist(),
+                        "recorded_bottom_depths_m": series.recorded_bottom_depths_m.tolist(),
+                        "corrected_top_depths_m": series.top_depths_m.tolist(),
+                        "corrected_bottom_depths_m": series.bottom_depths_m.tolist(),
+                        "corrected_centre_depths_m": series.centre_depths_m.tolist(),
+                        "path_length_differences_m": series.path_length_differences_m.tolist(),
+                        "arrival_time_differences_ms": (
+                            series.arrival_time_differences_s * 1000.0
+                        ).tolist(),
+                        "velocities_mps": nullable(series.velocities_mps),
+                        "velocity_standard_deviations_mps": nullable(
+                            series.standard_deviations_mps
+                        ),
+                        "valid_flags": series.valid_flags.tolist(),
+                        "status_messages": list(series.status_messages),
+                    }
+
+                payload["last_result"]["staggered_interval_comparison"] = {
+                    "method": (
+                        "geometric source-to-receiver path-length difference divided by "
+                        "picked arrival-time difference"
+                    ),
+                    "target_interval_m": interval_comparison.target_interval_m,
+                    "tolerance_m": interval_comparison.tolerance_m,
+                    "phase_definition": (
+                        "A starts on whole-metre recorded depths; B starts approximately half a "
+                        "target interval deeper"
+                    ),
+                    "independence_warning": (
+                        "Staggered windows overlap and are correlated; the slowness mean is an "
+                        "experimental sensitivity display, not an independent layer model."
+                    ),
+                    "adjacent": interval_series_payload(interval_comparison.adjacent),
+                    "phase_a": interval_series_payload(interval_comparison.phase_a),
+                    "phase_b": interval_series_payload(interval_comparison.phase_b),
+                    "slowness_mean_corrected_depths_m": (
+                        interval_comparison.slowness_mean_depths_m.tolist()
+                    ),
+                    "slowness_mean_velocities_mps": (
+                        interval_comparison.slowness_mean_velocities_mps.tolist()
+                    ),
+                }
+            except ValueError:
+                pass
+>>>>>>> Stashed changes
         return payload
 
     @Slot()
@@ -2121,7 +3720,22 @@ class RayPathMainWindow(QMainWindow):
             raise ValueError("This is not a supported RayPath SCPT project file.")
         self.project_path = path
         self.offset_spin.setValue(float(payload.get("source_offset_m", 2.4)))
+<<<<<<< Updated upstream
         self.reg_slider.setValue(round(float(payload.get("regularization", 0.35)) * 100))
+=======
+        self.survey_geometry = SurveyGeometry.from_dict(
+            payload.get("survey_geometry") if project_version >= 7 else None
+        )
+        self.active_geometry = None
+        robust_loss = str(payload.get("robust_loss", "linear"))
+        robust_index = self.robust_loss_combo.findData(robust_loss)
+        self.robust_loss_combo.setCurrentIndex(max(0, robust_index))
+        self.manual_uncertainty_spin.setValue(
+            float(payload.get("fallback_pick_uncertainty_ms", DEFAULT_MANUAL_PICK_UNCERTAINTY_MS))
+        )
+        self.ensemble_size_spin.setValue(int(payload.get("uncertainty_ensemble_size", DEFAULT_ENSEMBLE_SIZE)))
+        self.uncertainty_seed_spin.setValue(int(payload.get("uncertainty_random_seed", DEFAULT_UNCERTAINTY_SEED)))
+>>>>>>> Stashed changes
         saved_weight = float(payload.get("vs30_extrapolation_weight_factor", 1.0))
         saved_weight = float(np.clip(saved_weight, 0.25, 4.0))
         self.extrapolation_weight_slider.setValue(round(100.0 * math.log(saved_weight, 4.0)))
@@ -2149,7 +3763,28 @@ class RayPathMainWindow(QMainWindow):
                 for item in inputs
                 if item.get("depth_m") and item.get("arrival_time_ms")
             ]
+<<<<<<< Updated upstream
             self._set_input_rows(rows, str(payload.get("arrival_estimator", "first_cross")))
+=======
+            legacy_kind = str(payload.get("arrival_estimator", "first_cross"))
+            self._set_input_rows(rows, "zero_cross" if legacy_kind == "first_cross" else legacy_kind)
+        self.layer_boundary_table.blockSignals(True)
+        self.layer_boundary_table.setRowCount(0)
+        for boundary in payload.get("interpreted_layer_boundaries", []):
+            row = self.layer_boundary_table.rowCount()
+            self.layer_boundary_table.insertRow(row)
+            self.layer_boundary_table.setItem(
+                row,
+                0,
+                QTableWidgetItem(str(boundary.get("bottom_recorded_depth_m", ""))),
+            )
+            self.layer_boundary_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(str(boundary.get("interpretive_basis", ""))),
+            )
+        self.layer_boundary_table.blockSignals(False)
+>>>>>>> Stashed changes
         self.waveform_records = []
         self.gru_path = Path(payload["gru_source"]) if payload.get("gru_source") else None
         if self.gru_path and self.gru_path.is_file():
@@ -2181,6 +3816,7 @@ class RayPathMainWindow(QMainWindow):
             self.gru_label.setText("Project contains manually entered observations")
         self.review_action.setEnabled(bool(self.waveform_records))
         self._clear_results()
+<<<<<<< Updated upstream
         self.vs30_history = {
             (
                 str(item.get("pick_kind", payload.get("arrival_estimator", "first_cross"))),
@@ -2190,6 +3826,8 @@ class RayPathMainWindow(QMainWindow):
             for item in payload.get("vs30_history", [])
             if "regularization" in item and "vs30_mps" in item
         }
+=======
+>>>>>>> Stashed changes
         self._draw_vs30_analysis()
         self.status_label.setText(f"Opened {path.name}")
         self._set_dirty(False)
@@ -2211,6 +3849,7 @@ class RayPathMainWindow(QMainWindow):
                 writer = csv.writer(handle)
                 writer.writerow(
                     [
+<<<<<<< Updated upstream
                         "Layer",
                         "Top Depth (m)",
                         "Bottom Depth (m)",
@@ -2228,6 +3867,54 @@ class RayPathMainWindow(QMainWindow):
                         "Vs30 Extrapolation Weight Factor",
                         "Vs30 Extrapolated Thickness (m)",
                         "Vs30 Extrapolated Velocity (m/s)",
+=======
+                        "Observation",
+                        "Previous Corrected Receiver Depth (m)",
+                        "Corrected Receiver Depth (m)",
+                        "Recorded Receiver Depth (m)",
+                        "Corrected Source-to-Receiver Offset (m)",
+                        "Receiver East Relative to Source (m)",
+                        "Receiver North Relative to Source (m)",
+                        *[f"{PICK_LABELS[kind]} Vs (m/s)" for kind in PICK_KINDS],
+                        "Observed Post-Trigger Travel Time (ms)",
+                        "Calculated Post-Trigger Travel Time (ms)",
+                        "Fitting Error (ms)",
+                        "Observation Standard Deviation (ms)",
+                        "Standardized Residual (sigma)",
+                        "Observation Leverage",
+                        "Influence Score",
+                        "Layer Resolution",
+                        "Outlier Flag",
+                        "Influential Flag",
+                        "Velocity Bound Active",
+                        "Weighted RMSE (ms)",
+                        "Data Cost (ms^2)",
+                        "Interpreted Layer Count",
+                        "Robust Loss",
+                        "Ray Parameter (s/m)",
+                        "Model Parameterization",
+                        "Smoothing Status",
+                        "Ensemble Velocity 2.5% (m/s)",
+                        "Ensemble Velocity Median (m/s)",
+                        "Ensemble Velocity 97.5% (m/s)",
+                        "Uncertainty Random Seed",
+                        "Ensemble Requested Models",
+                        "Ensemble Classification",
+                        *[f"{PICK_LABELS[kind]} TS Method 1 Vs30 (m/s)" for kind in PICK_KINDS],
+                        *[f"{PICK_LABELS[kind]} TS Method 1 Lower Bound (m/s)" for kind in PICK_KINDS],
+                        *[f"{PICK_LABELS[kind]} TS Method 1 Upper Bound (m/s)" for kind in PICK_KINDS],
+                        *[f"{PICK_LABELS[kind]} Raw RayPath Vs30 (m/s)" for kind in PICK_KINDS],
+                        "TS Method 1 Indicative Vs30 Bands",
+                        "TS Method 1 Shallow Reference Vs (m/s)",
+                        "TS Method 1 Extended Thickness (m)",
+                        "TS Method 1 Extended Last-Layer Vs (m/s)",
+                        "Experimental Extrapolation Weight Factor",
+                        "Experimental Weighted Vs30 (m/s)",
+                        "Applied GRU Pre-Trigger Correction (ms)",
+                        "Arrival-Time Reference",
+                        "Application Version",
+                        "Project Schema Version",
+>>>>>>> Stashed changes
                     ]
                 )
                 tops = np.r_[0.0, self.result.depths_m[:-1]]
@@ -2252,8 +3939,26 @@ class RayPathMainWindow(QMainWindow):
                             f"{self.result.observed_times_s[i] * 1000.0:.4f}",
                             f"{self.result.calculated_times_s[i] * 1000.0:.4f}",
                             f"{self.result.residuals_s[i] * 1000.0:.4f}",
+<<<<<<< Updated upstream
                             f"{self.result.ray_parameters[i]:.10g}",
                             f"{self.reg_slider.value() / 100.0:.2f}",
+=======
+                            f"{self.result.observation_std_s[i] * 1000.0:.4f}",
+                            f"{self.result.standardized_residuals[i]:.4f}",
+                            f"{self.result.observation_leverage[i]:.6f}",
+                            f"{self.result.influence_scores[i]:.6f}",
+                            f"{self.result.resolution_diagonal[i]:.6f}",
+                            bool(self.result.outlier_flags[i]),
+                            bool(self.result.influential_flags[i]),
+                            bool(self.result.bound_active_flags[i]),
+                            f"{self.result.weighted_rmse_s * 1000.0:.4f}",
+                            f"{self.result.data_cost_ms2:.8g}",
+                            int(self.result.model_layer_bottoms_m.size),
+                            self.result.robust_loss,
+                            f"{self.result.ray_parameters[i]:.10g}",
+                            "analyst-defined piecewise-constant layers",
+                            "disabled",
+>>>>>>> Stashed changes
                             (
                                 "" if self.comparison_vs30.get("first_peak") is None
                                 else f"{self.comparison_vs30['first_peak'].value_mps:.3f}"
@@ -2275,10 +3980,324 @@ class RayPathMainWindow(QMainWindow):
                             ),
                         ]
                     )
+<<<<<<< Updated upstream
             self.status_label.setText(f"Exported {target.name}")
         except Exception as exc:
             self._show_error("Unable to export CSV", exc)
 
+=======
+            exported_names = [target.name]
+            layer_target = target.with_name(f"{target.stem}_layer_model.csv")
+            self._export_layer_model_csv(layer_target)
+            exported_names.append(layer_target.name)
+            try:
+                interval_target = target.with_name(f"{target.stem}_interval_comparison.csv")
+                self._export_interval_comparison_csv(interval_target)
+                exported_names.append(interval_target.name)
+            except ValueError:
+                pass
+            if self.observation_review:
+                qc_target = target.with_name(f"{target.stem}_waveform_qc.csv")
+                self._export_waveform_qc_csv(qc_target)
+                exported_names.append(qc_target.name)
+            self.status_label.setText(f"Exported {', '.join(exported_names)}")
+        except Exception as exc:
+            self._show_error("Unable to export CSV", exc)
+
+    def _export_layer_model_csv(self, target: Path) -> None:
+        """Write the analyst-defined layer geometry and fitted Vs values."""
+
+        if self.result is None or self.result.model_layer_bottoms_m.size == 0:
+            raise ValueError("Run a layered inversion before exporting the interpreted model.")
+        corrected_bottoms = self.result.model_layer_bottoms_m
+        corrected_tops = np.r_[0.0, corrected_bottoms[:-1]]
+        recorded_bottoms = (
+            self.active_layer_recorded_bottoms_m
+            if self.active_layer_recorded_bottoms_m.size == corrected_bottoms.size
+            else corrected_bottoms
+        )
+        recorded_tops = np.r_[0.0, recorded_bottoms[:-1]]
+        with target.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "Interpreted Layer",
+                    "Top Recorded Depth (m)",
+                    "Bottom Recorded Depth (m)",
+                    "Top Corrected Vertical Depth (m)",
+                    "Bottom Corrected Vertical Depth (m)",
+                    "Interpretive Basis / Unit",
+                    *[f"{PICK_LABELS[kind]} Layer Vs (m/s)" for kind in PICK_KINDS],
+                    "Selected Layer Resolution",
+                    "Selected Velocity Bound Active",
+                    "Model Parameterization",
+                    "Smoothing Status",
+                    "Application Version",
+                    "Project Schema Version",
+                ]
+            )
+            for index in range(corrected_bottoms.size):
+                writer.writerow(
+                    [
+                        index + 1,
+                        f"{recorded_tops[index]:.4f}",
+                        f"{recorded_bottoms[index]:.4f}",
+                        f"{corrected_tops[index]:.4f}",
+                        f"{corrected_bottoms[index]:.4f}",
+                        self.active_layer_notes[index] if index < len(self.active_layer_notes) else "",
+                        *[
+                            ""
+                            if kind not in self.comparison_results
+                            or self.comparison_results[kind].model_layer_velocities_mps.size <= index
+                            else f"{self.comparison_results[kind].model_layer_velocities_mps[index]:.3f}"
+                            for kind in PICK_KINDS
+                        ],
+                        (
+                            ""
+                            if self.result.model_layer_resolution.size <= index
+                            else f"{self.result.model_layer_resolution[index]:.6f}"
+                        ),
+                        (
+                            ""
+                            if self.result.model_layer_bound_active.size <= index
+                            else bool(self.result.model_layer_bound_active[index])
+                        ),
+                        "analyst-defined piecewise-constant layers",
+                        "disabled",
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ]
+                )
+
+    def _export_interval_comparison_csv(self, target: Path) -> None:
+        """Write an auditable companion schedule for observed interval velocities."""
+
+        if self.result is None:
+            raise ValueError("Run the inversion before exporting interval comparisons.")
+        comparison = self._interval_comparison_for_result(self.result)
+        selected_pick = PICK_LABELS.get(str(self.estimator_combo.currentData()), "Selected")
+        with target.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "Interpretation",
+                    "Recorded Top Receiver Depth (m)",
+                    "Recorded Bottom Receiver Depth (m)",
+                    "Corrected Vertical Top Depth (m)",
+                    "Corrected Vertical Bottom Depth (m)",
+                    "Corrected Vertical Centre Depth (m)",
+                    "Geometric Path-Length Difference (m)",
+                    "Picked Arrival-Time Difference (ms)",
+                    "Interval Vs (m/s)",
+                    "Approximate Vs Standard Deviation (m/s)",
+                    "Approximate 95% Lower Vs (m/s)",
+                    "Approximate 95% Upper Vs (m/s)",
+                    "Arrival Pick Definition",
+                    "Method / Status",
+                    "Application Version",
+                    "Project Schema Version",
+                ]
+            )
+
+            def write_series(name: str, series: IntervalVelocitySeries) -> None:
+                for index, velocity in enumerate(series.velocities_mps):
+                    standard_deviation = float(series.standard_deviations_mps[index])
+                    is_valid = bool(series.valid_flags[index]) and math.isfinite(float(velocity))
+                    has_uncertainty = is_valid and math.isfinite(standard_deviation)
+                    writer.writerow(
+                        [
+                            name,
+                            f"{series.recorded_top_depths_m[index]:.4f}",
+                            f"{series.recorded_bottom_depths_m[index]:.4f}",
+                            f"{series.top_depths_m[index]:.4f}",
+                            f"{series.bottom_depths_m[index]:.4f}",
+                            f"{series.centre_depths_m[index]:.4f}",
+                            f"{series.path_length_differences_m[index]:.6f}",
+                            f"{series.arrival_time_differences_s[index] * 1000.0:.6f}",
+                            "" if not is_valid else f"{velocity:.3f}",
+                            "" if not has_uncertainty else f"{standard_deviation:.3f}",
+                            (
+                                ""
+                                if not has_uncertainty
+                                else f"{max(0.0, velocity - 1.96 * standard_deviation):.3f}"
+                            ),
+                            (
+                                ""
+                                if not has_uncertainty
+                                else f"{velocity + 1.96 * standard_deviation:.3f}"
+                            ),
+                            selected_pick,
+                            (
+                                f"{series.status_messages[index]}; observed geometric path-length difference / "
+                                "picked time difference; uncertainty assumes independent pick errors"
+                            ),
+                            APP_VERSION,
+                            PROJECT_SCHEMA_VERSION,
+                        ]
+                    )
+
+            write_series("Adjacent receiver intervals", comparison.adjacent)
+            write_series("1 m phase A - whole-metre grid", comparison.phase_a)
+            write_series("1 m phase B - approximately 0.5 m stagger", comparison.phase_b)
+            for depth, velocity in zip(
+                comparison.slowness_mean_depths_m,
+                comparison.slowness_mean_velocities_mps,
+            ):
+                writer.writerow(
+                    [
+                        "Experimental staggered slowness mean",
+                        "",
+                        "",
+                        "",
+                        "",
+                        f"{depth:.4f}",
+                        "",
+                        "",
+                        f"{velocity:.3f}",
+                        "",
+                        "",
+                        "",
+                        selected_pick,
+                        (
+                            "Interpolated mean slowness of overlapping phase A/B windows; correlated "
+                            "sensitivity display only, not an independent layer model"
+                        ),
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ]
+                )
+
+    def _export_waveform_qc_csv(self, target: Path) -> None:
+        """Write a companion receiver-level QC and exclusions schedule."""
+
+        geometry_by_depth: dict[float, tuple[float, float]] = {}
+        try:
+            geometry_depths = self._geometry_recorded_depths()
+            corrected = calculate_corrected_geometry(
+                geometry_depths,
+                self.offset_spin.value(),
+                self.survey_geometry,
+            )
+            geometry_by_depth = {
+                round(float(depth), 6): (float(vertical), float(offset))
+                for depth, vertical, offset in zip(
+                    corrected.recorded_depths_m,
+                    corrected.vertical_depths_m,
+                    corrected.receiver_offsets_m,
+                )
+            }
+        except (ValueError, TypeError):
+            pass
+        with target.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "Test",
+                    "Recorded Receiver Depth (m)",
+                    "Corrected Vertical Depth (m)",
+                    "Corrected Source-to-Receiver Offset (m)",
+                    "Applied Pre-Trigger Correction (ms)",
+                    "Pick Time Reference",
+                    "Review State",
+                    "Included in Inversion",
+                    "Pick Uncertainty (ms)",
+                    "Pick Uncertainty Source",
+                    "Pick Uncertainty Basis",
+                    "Left Pre-Trigger Noise RMS (recorded units)",
+                    "Right Pre-Trigger Noise RMS (recorded units)",
+                    "Left SNR (dB)",
+                    "Right SNR (dB)",
+                    "Sign-Reversed Correlation",
+                    "Correlation Lag (ms)",
+                    "First Peak/Trough Disagreement (ms)",
+                    "Individual Zero-Cross Disagreement (ms)",
+                    "Maximum-Peak Disagreement (ms)",
+                    "Reversed Polarity",
+                    "Sample Interval (ms)",
+                    "Sample Interval Maximum Deviation (%)",
+                    "Possible Clipping",
+                    "Constant Trace",
+                    "QC Warnings",
+                    "Analyst Comment",
+                    "Application Version",
+                    "Project Schema Version",
+                ]
+            )
+
+            def number(value: float | None, decimals: int = 3) -> str:
+                if value is None:
+                    return ""
+                if math.isinf(value):
+                    return "inf" if value > 0.0 else "-inf"
+                return f"{value:.{decimals}f}"
+
+            for record in self.waveform_records:
+                qc = calculate_waveform_qc(record)
+                corrected_depth, corrected_offset = geometry_by_depth.get(
+                    round(record.depth_m, 6),
+                    (record.depth_m, self.offset_spin.value()),
+                )
+                writer.writerow(
+                    [
+                        record.test_number,
+                        f"{record.depth_m:.4f}",
+                        f"{corrected_depth:.4f}",
+                        f"{corrected_offset:.4f}",
+                        f"{record.pre_trigger_ms:.3f}",
+                        "relative to physical trigger",
+                        REVIEW_LABELS.get(record.review_state, record.review_state),
+                        "No" if record.is_excluded else "Yes",
+                        number(record.pick_uncertainty_ms),
+                        record.pick_uncertainty_source,
+                        record.pick_uncertainty_basis,
+                        number(qc.noise_rms_left, 6),
+                        number(qc.noise_rms_right, 6),
+                        number(qc.snr_left_db, 2),
+                        number(qc.snr_right_db, 2),
+                        number(qc.sign_reversed_correlation, 4),
+                        number(qc.correlation_lag_ms),
+                        number(qc.first_peak_disagreement_ms),
+                        number(qc.zero_cross_disagreement_ms),
+                        number(qc.max_peak_disagreement_ms),
+                        "Yes" if qc.polarity_reversed else "No",
+                        number(qc.sample_interval_ms),
+                        number(qc.sample_interval_deviation_pct, 4),
+                        "Yes" if qc.clipped_left or qc.clipped_right else "No",
+                        "Yes" if qc.constant_left or qc.constant_right else "No",
+                        "; ".join(qc.warnings),
+                        record.review_comment,
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ]
+                )
+            if not self.waveform_records:
+                for depth, metadata in sorted(self.observation_review.items()):
+                    state = str(metadata.get("review_state", "not_reviewed"))
+                    corrected_depth, corrected_offset = geometry_by_depth.get(
+                        round(depth, 6),
+                        (depth, self.offset_spin.value()),
+                    )
+                    writer.writerow(
+                        [
+                            "",
+                            f"{depth:.4f}",
+                            f"{corrected_depth:.4f}",
+                            f"{corrected_offset:.4f}",
+                            "" if self.gru_pre_trigger_ms is None else f"{self.gru_pre_trigger_ms:.3f}",
+                            "relative to physical trigger",
+                            REVIEW_LABELS.get(state, state),
+                            "No" if state == "rejected" else "Yes",
+                            number(metadata.get("pick_uncertainty_ms")),
+                            str(metadata.get("pick_uncertainty_source", "fallback")),
+                            str(metadata.get("pick_uncertainty_basis", "Fallback project setting.")),
+                            *([""] * 15),
+                            str(metadata.get("review_comment", "")),
+                            APP_VERSION,
+                            PROJECT_SCHEMA_VERSION,
+                        ]
+                    )
+
+>>>>>>> Stashed changes
     @Slot()
     def export_pdf_report(self) -> None:
         """Prompt for and generate a complete printable engineering report."""
@@ -2335,6 +4354,10 @@ class RayPathMainWindow(QMainWindow):
         assert self.result is not None
         selected_kind = str(self.estimator_combo.currentData())
         selected_result = self.result
+        try:
+            interval_comparison = self._interval_comparison_for_result(selected_result)
+        except ValueError:
+            interval_comparison = None
         report_time = datetime.now().astimezone()
         primary = colors.HexColor("#147D75")
         dark = colors.HexColor("#163F3B")
@@ -2483,15 +4506,39 @@ class RayPathMainWindow(QMainWindow):
                 comparison = self.comparison_results.get(kind)
                 if comparison is None:
                     continue
+                comparison_bottoms, comparison_velocities = result_model_profile(comparison)
                 ax.stairs(
-                    comparison.velocities_mps,
-                    np.r_[0.0, comparison.depths_m],
+                    comparison_velocities,
+                    np.r_[0.0, comparison_bottoms],
                     orientation="horizontal",
                     color=MODEL_COLORS[kind],
                     linewidth=2.2 if kind == selected_kind else 1.6,
                     label=PICK_LABELS[kind],
                 )
+<<<<<<< Updated upstream
             ax.set_title("Optimized shear-wave velocity comparison", fontsize=11, fontweight="bold")
+=======
+                ensemble = self.uncertainty_results.get(kind)
+                if kind == selected_kind and ensemble is not None:
+                    envelope_edges = np.r_[0.0, comparison.depths_m]
+                    ax.fill_betweenx(
+                        envelope_edges,
+                        np.r_[ensemble.velocity_lower_mps, ensemble.velocity_lower_mps[-1]],
+                        np.r_[ensemble.velocity_upper_mps, ensemble.velocity_upper_mps[-1]],
+                        step="post",
+                        color=MODEL_COLORS[kind],
+                        alpha=0.18,
+                        label=(
+                            "Preliminary 2.5-97.5% pick-time ensemble"
+                            if ensemble.requested_models < REPORT_QUALITY_ENSEMBLE_MINIMUM
+                            else "Report-quality 2.5-97.5% pick-time ensemble"
+                        ),
+                    )
+            selected_bottoms, _selected_velocities = result_model_profile(selected_result)
+            for boundary in selected_bottoms[:-1]:
+                ax.axhline(boundary, color="#819790", linewidth=0.8, linestyle=":", alpha=0.8)
+            ax.set_title("Interpreted layered shear-wave velocity comparison", fontsize=11, fontweight="bold")
+>>>>>>> Stashed changes
             ax.set_xlabel("Vs (m/s)")
             ax.set_ylabel("Depth (m)")
             ax.set_ylim(float(selected_result.depths_m[-1]), 0.0)
@@ -2522,18 +4569,137 @@ class RayPathMainWindow(QMainWindow):
             ax.set_xlabel("Post-trigger travel time (ms)")
             ax.set_ylabel("Depth (m)")
             ax.set_ylim(float(selected_result.depths_m[-1]), 0.0)
+<<<<<<< Updated upstream
+=======
+            selected_bottoms, _selected_velocities = result_model_profile(selected_result)
+            for boundary in selected_bottoms[:-1]:
+                ax.axhline(boundary, color="#819790", linewidth=0.8, linestyle=":", alpha=0.8)
+            ax.tick_params(axis="y", labelleft=True, colors="#111111")
+            ax.yaxis.label.set_color("#111111")
+>>>>>>> Stashed changes
             ax.legend(fontsize=7.5, frameon=True)
 
+        def draw_interval_comparison(ax: Any) -> None:
+            if interval_comparison is None:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "At least three valid receiver observations are required.",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                )
+            else:
+                adjacent = interval_comparison.adjacent
+                if adjacent.velocities_mps.size:
+                    ax.plot(
+                        adjacent.velocities_mps,
+                        adjacent.centre_depths_m,
+                        "--o",
+                        color="#8B949E",
+                        linewidth=1.0,
+                        markersize=3,
+                        alpha=0.65,
+                        label="Adjacent receiver intervals",
+                    )
+                phase_specs = (
+                    (
+                        interval_comparison.phase_a,
+                        "#2F81F7",
+                        "1 m phase A - whole-metre grid",
+                    ),
+                    (
+                        interval_comparison.phase_b,
+                        "#F0883E",
+                        "1 m phase B - approximately 0.5 m stagger",
+                    ),
+                )
+                for series, color, label in phase_specs:
+                    if not series.velocities_mps.size:
+                        continue
+                    finite = np.isfinite(series.standard_deviations_mps)
+                    if np.any(finite):
+                        ax.errorbar(
+                            series.velocities_mps[finite],
+                            series.centre_depths_m[finite],
+                            xerr=1.96 * series.standard_deviations_mps[finite],
+                            fmt="none",
+                            ecolor=color,
+                            elinewidth=0.8,
+                            capsize=2,
+                            alpha=0.35,
+                        )
+                    ax.plot(
+                        series.velocities_mps,
+                        series.centre_depths_m,
+                        "-o",
+                        color=color,
+                        linewidth=1.7,
+                        markersize=4,
+                        label=label,
+                    )
+                if interval_comparison.slowness_mean_velocities_mps.size:
+                    ax.plot(
+                        interval_comparison.slowness_mean_velocities_mps,
+                        interval_comparison.slowness_mean_depths_m,
+                        "-s",
+                        color="#147D75",
+                        linewidth=2.6,
+                        markersize=4,
+                        label="Experimental staggered slowness mean",
+                    )
+                selected_bottoms, selected_velocities = result_model_profile(selected_result)
+                ax.stairs(
+                    selected_velocities,
+                    np.r_[0.0, selected_bottoms],
+                    orientation="horizontal",
+                    color="#163F3B",
+                    linewidth=1.5,
+                    alpha=0.8,
+                    label="Selected RayPath model",
+                )
+                for boundary in selected_bottoms[:-1]:
+                    ax.axhline(boundary, color="#819790", linewidth=0.8, linestyle=":", alpha=0.8)
+                ax.text(
+                    0.01,
+                    0.01,
+                    "The 1 m windows overlap and are correlated.\n"
+                    "The slowness mean is an experimental sensitivity display,\n"
+                    "not an independent layer model.",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="bottom",
+                    fontsize=7.5,
+                    color="#5F746F",
+                    bbox={"facecolor": "white", "edgecolor": "#C9D5D2", "alpha": 0.92, "pad": 4},
+                )
+                ax.legend(fontsize=7.5, frameon=True)
+            ax.set_title(
+                f"Observed path-length interval sensitivity - {PICK_LABELS.get(selected_kind, selected_kind)} picks",
+                fontsize=11,
+                fontweight="bold",
+            )
+            ax.set_xlabel("Vs (m/s)")
+            ax.set_ylabel("Corrected vertical depth (m)")
+            ax.set_xlim(0.0, VELOCITY_PROFILE_DISPLAY_MAX)
+            ax.set_ylim(float(selected_result.depths_m[-1]), 0.0)
+
         def draw_rays(ax: Any) -> None:
-            edges = np.r_[0.0, selected_result.depths_m]
+            model_bottoms, _model_velocities = result_model_profile(selected_result)
+            edges = np.r_[0.0, model_bottoms]
             offset = self.offset_spin.value()
             for boundary in edges:
                 ax.hlines(boundary, 0.0, offset, color="#B8C4CC", linewidth=0.55)
             cmap = colormaps["viridis"]
             for index, segments in enumerate(selected_result.ray_x_segments):
+                ray_depths = (
+                    selected_result.ray_z_nodes_m[index]
+                    if len(selected_result.ray_z_nodes_m) == len(selected_result.ray_x_segments)
+                    else np.r_[0.0, selected_result.depths_m[: index + 1]]
+                )
                 ax.plot(
                     np.r_[0.0, np.cumsum(segments)],
-                    edges[: index + 2],
+                    ray_depths,
                     color=cmap((index + 1) / len(selected_result.ray_x_segments)),
                     linewidth=1.0,
                 )
@@ -2687,8 +4853,76 @@ class RayPathMainWindow(QMainWindow):
             [p("GRU source"), p(self.gru_path.name if self.gru_path else "Manual / CSV observations")],
             [p("Source offset"), p(f"{self.offset_spin.value():.3f} m")],
             [p("Selected detailed model"), p(PICK_LABELS.get(selected_kind, selected_kind))],
+<<<<<<< Updated upstream
             [p("Smoothing / regularisation"), p(f"{self.reg_slider.value() / 100.0:.2f}")],
             [p("Vs30 extrapolation weighting"), p(f"{self._extrapolation_weight_factor():.2f}")],
+=======
+            [
+                p("Inversion objective"),
+                p(
+                    f"Analyst-defined piecewise-constant model with "
+                    f"{selected_result.model_layer_bottoms_m.size} fitted layers and no smoothing or "
+                    f"regularisation; {selected_result.robust_loss} loss; "
+                    f"RMSE {selected_result.rmse_s * 1000.0:.3f} ms; weighted RMSE "
+                    f"{selected_result.weighted_rmse_s * 1000.0:.3f} ms; data cost "
+                    f"{selected_result.data_cost_ms2:.4g} ms^2"
+                ),
+            ],
+            [
+                p("Observed interval comparator"),
+                p(
+                    "Adjacent and 1.0 m +/- 0.15 m staggered receiver pairs; geometric source-to-receiver "
+                    "path-length difference divided by picked arrival-time difference. Phase A is anchored "
+                    "to whole-metre recorded depths and phase B is approximately 0.5 m staggered. "
+                    "Overlapping windows are correlated; the slowness mean is experimental."
+                ),
+            ],
+            [
+                p("Arrival uncertainty weighting"),
+                p(
+                    f"One sigma per observation; selected-model range "
+                    f"{np.min(selected_result.observation_std_s) * 1000.0:.3f}-"
+                    f"{np.max(selected_result.observation_std_s) * 1000.0:.3f} ms; fallback "
+                    f"{self.manual_uncertainty_spin.value():.3f} ms"
+                ),
+            ],
+            [
+                p("Uncertainty ensemble"),
+                p(
+                    "Off"
+                    if selected_kind not in self.uncertainty_results
+                    else (
+                        f"{uncertainty_ensemble_classification(self.uncertainty_results[selected_kind].requested_models)}; "
+                        f"{self.uncertainty_results[selected_kind].successful_models}/"
+                        f"{self.uncertainty_results[selected_kind].requested_models} successful; seed "
+                        f"{self.uncertainty_results[selected_kind].random_seed}; velocity and Vs30 percentiles "
+                        "2.5/50/97.5; Vs30 median/95% interval "
+                        f"{self.uncertainty_results[selected_kind].vs30_median_mps:.1f} / "
+                        f"{self.uncertainty_results[selected_kind].vs30_lower_mps:.1f}-"
+                        f"{self.uncertainty_results[selected_kind].vs30_upper_mps:.1f} m/s"
+                    )
+                ),
+            ],
+            [
+                p("Primary Vs30 method"),
+                p(
+                    "TS 1170.5:2025 Method 1 - direct measured Vs"
+                    if self.current_vs30 is None
+                    else (
+                        f"TS 1170.5:2025 Method 1; raw/adjusted "
+                        f"{self.current_vs30.raw_value_mps:.1f}/{self.current_vs30.value_mps:.1f} m/s; "
+                        f"5% bounds {self.current_vs30.lower_bound_mps:.1f}-"
+                        f"{self.current_vs30.upper_bound_mps:.1f} m/s; 0-3 m set to "
+                        f"{self.current_vs30.shallow_reference_velocity_mps:.1f} m/s; bands "
+                        f"{'/'.join(self.current_vs30.indicative_vs30_bands)}"
+                    )
+                ),
+            ],
+            [
+                p("Experimental extrapolation weighting"),
+                p(f"{self._extrapolation_weight_factor():.2f} - excluded from the primary Method 1 result"),
+            ],
+>>>>>>> Stashed changes
             [p("Deepest receiver"), p(f"{selected_result.depths_m[-1]:.2f} m")],
             [p("GRU pre-trigger correction"), p(f"{GRU_PRE_TRIGGER_MS:.1f} ms")],
         ]
@@ -2709,9 +4943,22 @@ class RayPathMainWindow(QMainWindow):
         )
         story.append(metadata_table)
         story.append(Paragraph("Model comparison", styles["SectionHeading"]))
+<<<<<<< Updated upstream
         comparison_rows: list[list[Any]] = [
             ["Pick definition", "Layers", "RMSE (ms)", "Vs30 (m/s)", "Extrapolation"]
         ]
+=======
+        comparison_rows: list[list[Any]] = [[
+            p("Pick definition", "TableHeader"),
+            p("Layers", "TableHeader"),
+            p("RMSE / weighted (ms)", "TableHeader"),
+            p("Parameters / data cost", "TableHeader"),
+            p("TS M1 Vs30 (m/s)", "TableHeader"),
+            p("5% range (m/s)", "TableHeader"),
+            p("Vs30 bands", "TableHeader"),
+            p("30 m extension", "TableHeader"),
+        ]]
+>>>>>>> Stashed changes
         for kind in PICK_KINDS:
             comparison = self.comparison_results.get(kind)
             vs30 = self.comparison_vs30.get(kind)
@@ -2731,8 +4978,14 @@ class RayPathMainWindow(QMainWindow):
             comparison_rows.append(
                 [
                     p(PICK_LABELS[kind]),
+<<<<<<< Updated upstream
                     p(comparison.depths_m.size),
                     p(f"{comparison.rmse_s * 1000.0:.3f}"),
+=======
+                    p(comparison.model_layer_bottoms_m.size or comparison.depths_m.size),
+                    p(f"{comparison.rmse_s * 1000.0:.3f} / {comparison.weighted_rmse_s * 1000.0:.3f}"),
+                    p(f"{comparison.model_layer_bottoms_m.size} / {comparison.data_cost_ms2:.3g}"),
+>>>>>>> Stashed changes
                     p(vs30_text),
                     p(extrapolation_text),
                 ]
@@ -2747,15 +5000,58 @@ class RayPathMainWindow(QMainWindow):
         story.append(Spacer(1, 3 * mm))
         story.append(
             Paragraph(
+<<<<<<< Updated upstream
                 "Vs30 is calculated as 30 divided by the summed vertical shear-wave travel time. Profiles "
                 "between 25 m and 30 m use the configured interval weighting only to estimate the missing depth. "
                 "Automatic waveform suggestions should be reviewed by a qualified operator before relying on this report.",
+=======
+                "Velocity parameterisation: layer bottoms are analyst-defined using the recorded-depth "
+                "interpretation table and are converted to corrected vertical depths using the survey geometry. "
+                "One constant Vs is fitted per layer to all applicable arrival observations. No smoothing, "
+                "roughness penalty, or automatic L-curve selection is applied. Boundary selection remains an "
+                "engineering interpretation that should be supported by CPT stratigraphy, corrected-time slope "
+                "changes, or another recorded ground-model basis.",
+                styles["ReportNote"],
+            )
+        )
+        story.append(Spacer(1, 2 * mm))
+        story.append(
+            Paragraph(
+                "Arrival definitions: First peak/trough is the mean of the reviewed left and right extrema; "
+                "Pair crossover is one reviewed time where the reversed traces intersect after arrival; "
+                "Individual zero crossing is the mean of two per-trace zero-axis crossings and is experimental; "
+                "Maximum peak is the mean of two maximum-amplitude times and is experimental.",
+                styles["ReportNote"],
+            )
+        )
+        story.append(Spacer(1, 2 * mm))
+        story.append(
+            Paragraph(
+                "The primary Vs30 follows TS 1170.5:2025 Method 1 for direct SCPT measurements: 0-3 m is "
+                "assigned the depth-average measured from 2.5-3.5 m, profiles reaching at least 25 m extend "
+                "the last measured layer to 30 m, and the reported bounds are Vs30/1.05 and 1.05 x Vs30. "
+                "The listed bands use Vs30 thresholds only and are not a final site classification; all additional "
+                "TS soil and rock criteria require engineering review. Experimental interval weighting is excluded "
+                "from these primary results.",
+>>>>>>> Stashed changes
+                styles["ReportNote"],
+            )
+        )
+        story.append(Spacer(1, 2 * mm))
+        story.append(
+            Paragraph(
+                "The observed 1 m comparator remains a pseudo-interval interpretation when receiver records "
+                "come from separate source impacts. Wider time differences reduce sensitivity to a fixed pick "
+                "error but reduce vertical resolution and may average across a real layer boundary. The two "
+                "staggered series are compared as sampling-phase sensitivity; their slowness mean is not used "
+                "as the forward inversion or primary Vs30 model.",
                 styles["ReportNote"],
             )
         )
 
         full_page_plots = (
             ("Velocity profile comparison", draw_velocity),
+            ("Staggered 1 m interval comparison", draw_interval_comparison),
             ("Arrival-time fit comparison", draw_fit),
             ("Selected-model ray paths", draw_rays),
             ("Waveform waterfall and reviewed picks", draw_waterfall),
@@ -2794,6 +5090,7 @@ class RayPathMainWindow(QMainWindow):
         story.append(Spacer(1, 2 * mm))
         layer_rows: list[list[Any]] = [
             [
+<<<<<<< Updated upstream
                 "Layer",
                 "Top (m)",
                 "Bottom (m)",
@@ -2801,26 +5098,74 @@ class RayPathMainWindow(QMainWindow):
                 "First cross Vs",
                 "Max peak Vs",
                 "Selected residual (ms)",
+=======
+                p("Layer", "TableHeader"),
+                p("Recorded top-bottom (m)", "TableHeader"),
+                p("Corrected top-bottom (m)", "TableHeader"),
+                p("Interpretive basis / unit", "TableHeader"),
+                *[p(f"{PICK_LABELS[kind]} Vs", "TableHeader") for kind in PICK_KINDS],
+                p("Selected diagnostics", "TableHeader"),
+>>>>>>> Stashed changes
             ]
         ]
-        tops = np.r_[0.0, selected_result.depths_m[:-1]]
-        for index in range(selected_result.depths_m.size):
+        corrected_bottoms, _selected_velocities = result_model_profile(selected_result)
+        corrected_tops = np.r_[0.0, corrected_bottoms[:-1]]
+        recorded_bottoms = (
+            self.active_layer_recorded_bottoms_m
+            if self.active_layer_recorded_bottoms_m.size == corrected_bottoms.size
+            else corrected_bottoms
+        )
+        recorded_tops = np.r_[0.0, recorded_bottoms[:-1]]
+        observation_layers = np.searchsorted(corrected_bottoms, selected_result.depths_m, side="left")
+        for index in range(corrected_bottoms.size):
             velocity_cells = []
             for kind in PICK_KINDS:
                 comparison = self.comparison_results.get(kind)
+<<<<<<< Updated upstream
                 velocity_cells.append("-" if comparison is None else f"{comparison.velocities_mps[index]:.1f}")
+=======
+                if comparison is None:
+                    velocity_cells.append("-")
+                else:
+                    _bottoms, velocities = result_model_profile(comparison)
+                    velocity_cells.append("-" if index >= velocities.size else f"{velocities[index]:.1f}")
+            observations = observation_layers == index
+            residuals_ms = selected_result.residuals_s[observations] * 1000.0
+            layer_rmse_ms = float(np.sqrt(np.mean(residuals_ms * residuals_ms)))
+            diagnostic_parts = []
+            if selected_result.model_layer_resolution.size == corrected_bottoms.size:
+                diagnostic_parts.append(f"R={selected_result.model_layer_resolution[index]:.2f}")
+            if selected_result.model_layer_bound_active.size == corrected_bottoms.size and selected_result.model_layer_bound_active[index]:
+                diagnostic_parts.append("BOUND")
+            if np.any(selected_result.outlier_flags[observations]):
+                diagnostic_parts.append("OUTLIER")
+            if np.any(selected_result.influential_flags[observations]):
+                diagnostic_parts.append("INFLUENTIAL")
+>>>>>>> Stashed changes
             layer_rows.append(
                 [
                     p(index + 1),
-                    p(f"{tops[index]:.2f}"),
-                    p(f"{selected_result.depths_m[index]:.2f}"),
+                    p(f"{recorded_tops[index]:.2f}-{recorded_bottoms[index]:.2f}"),
+                    p(f"{corrected_tops[index]:.2f}-{corrected_bottoms[index]:.2f}"),
+                    p(self.active_layer_notes[index] if index < len(self.active_layer_notes) else "Not recorded"),
                     *[p(value) for value in velocity_cells],
+<<<<<<< Updated upstream
                     p(f"{selected_result.residuals_s[index] * 1000.0:+.3f}"),
+=======
+                    p(
+                        f"{layer_rmse_ms:.3f} ms RMS / {int(np.count_nonzero(observations))} obs; "
+                        + (", ".join(diagnostic_parts) or "diagnostics unavailable")
+                    ),
+>>>>>>> Stashed changes
                 ]
             )
         layer_table = LongTable(
             layer_rows,
+<<<<<<< Updated upstream
             colWidths=[14 * mm, 22 * mm, 24 * mm, 29 * mm, 30 * mm, 28 * mm, 33 * mm],
+=======
+            colWidths=[8 * mm, 21 * mm, 23 * mm, 28 * mm, *([16 * mm] * len(PICK_KINDS)), 36 * mm],
+>>>>>>> Stashed changes
             repeatRows=1,
         )
         layer_table.setStyle(table_style(font_size=6.9))
@@ -2843,24 +5188,80 @@ class RayPathMainWindow(QMainWindow):
                 except ValueError:
                     depths, times_s = self._read_input_rows()
                     times_by_pick_s = {str(self.estimator_combo.currentData()): times_s}
+<<<<<<< Updated upstream
         except Exception as exc:
             self._show_error("Invalid input data", exc)
             return
+=======
+            corrected_geometry = calculate_corrected_geometry(
+                depths,
+                self.offset_spin.value(),
+                self.survey_geometry,
+            )
+            recorded_layer_bottoms, corrected_layer_bottoms, layer_notes = (
+                self._corrected_interpreted_layers(depths, corrected_geometry)
+            )
+            observation_std_s = self._observation_uncertainties_s(depths)
+        except Exception as exc:
+            self._show_error("Invalid input data", exc)
+            return
+        if corrected_geometry.warnings:
+            warning_lines = "\n• " + "\n• ".join(corrected_geometry.warnings)
+            answer = QMessageBox.question(
+                self,
+                "Geometry applicability warnings",
+                "The ray model can run, but the following survey geometry items are incomplete or "
+                f"inconsistent:{warning_lines}\n\nContinue using the calculated/nominal geometry?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.active_geometry = corrected_geometry
+        self.active_layer_recorded_bottoms_m = recorded_layer_bottoms
+        self.active_layer_notes = layer_notes
+>>>>>>> Stashed changes
         self.run_button.setEnabled(False)
         self.run_button.setText("Inversion running…")
         self.input_table.setEnabled(False)
         self.offset_spin.setEnabled(False)
         self.estimator_combo.setEnabled(False)
-        self.reg_slider.setEnabled(False)
+        self.layer_boundary_table.setEnabled(False)
+        self.add_selected_boundary_button.setEnabled(False)
+        self.add_boundary_button.setEnabled(False)
+        self.remove_boundary_button.setEnabled(False)
+        self.clear_boundary_button.setEnabled(False)
         self.extrapolation_weight_slider.setEnabled(False)
+<<<<<<< Updated upstream
         self.status_label.setText("Solving refracted ray paths and velocity model…")
+=======
+        self.geometry_button.setEnabled(False)
+        self.robust_loss_combo.setEnabled(False)
+        self.manual_uncertainty_spin.setEnabled(False)
+        self.ensemble_preset_combo.setEnabled(False)
+        self.ensemble_size_spin.setEnabled(False)
+        self.uncertainty_seed_spin.setEnabled(False)
+        self.status_label.setText(
+            f"Solving {corrected_layer_bottoms.size}-layer refracted ray-path model…"
+        )
+>>>>>>> Stashed changes
         self.rmse_label.setText("RMSE: calculating…")
         self._thread = QThread(self)
         self._worker = InversionWorker(
             depths,
             times_by_pick_s,
             self.offset_spin.value(),
+<<<<<<< Updated upstream
             self.reg_slider.value() / 100.0,
+=======
+            corrected_geometry.receiver_offsets_m,
+            corrected_layer_bottoms,
+            observation_std_s,
+            str(self.robust_loss_combo.currentData()),
+            str(self.estimator_combo.currentData()),
+            self.ensemble_size_spin.value(),
+            self.uncertainty_seed_spin.value(),
+>>>>>>> Stashed changes
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -2880,8 +5281,18 @@ class RayPathMainWindow(QMainWindow):
         )
 
     @Slot(object)
+<<<<<<< Updated upstream
     def _inversion_finished(self, results: dict[str, InversionResult]) -> None:
         self.comparison_results = dict(results)
+=======
+    def _inversion_finished(self, batch: InversionBatchResult | dict[str, InversionResult]) -> None:
+        if isinstance(batch, InversionBatchResult):
+            self.comparison_results = dict(batch.results)
+            self.uncertainty_results = dict(batch.uncertainty_results)
+        else:
+            self.comparison_results = dict(batch)
+            self.uncertainty_results.clear()
+>>>>>>> Stashed changes
         self._update_all_vs30_results(record_history=True)
         selected_kind = str(self.estimator_combo.currentData())
         if selected_kind not in self.comparison_results:
@@ -2898,7 +5309,7 @@ class RayPathMainWindow(QMainWindow):
                 self,
                 "Optimizer convergence warning",
                 "The solver returned a finite model but did not report formal convergence.\n\n"
-                f"{result.message}\n\nReview the arrival picks and smoothing factor before using these results.",
+                f"{result.message}\n\nReview the arrival picks and interpreted layer boundaries before using these results.",
             )
         self._set_dirty(True)
 
@@ -2908,16 +5319,27 @@ class RayPathMainWindow(QMainWindow):
         self.comparison_vs30.clear()
         self.comparison_vs30_reasons.clear()
         weight_factor = self._extrapolation_weight_factor()
-        smoothing = self.reg_slider.value() / 100.0
         for kind, result in self.comparison_results.items():
+            profile_depths, profile_velocities = result_model_profile(result)
             try:
+<<<<<<< Updated upstream
                 value = calculate_vs30(result.depths_m, result.velocities_mps, weight_factor)
+=======
+                value = calculate_ts1170_5_method1_vs30(profile_depths, profile_velocities)
+>>>>>>> Stashed changes
                 self.comparison_vs30[kind] = value
-                if record_history:
-                    self.vs30_history[(kind, smoothing, round(weight_factor, 6))] = value.value_mps
             except ValueError as exc:
                 self.comparison_vs30[kind] = None
                 self.comparison_vs30_reasons[kind] = str(exc)
+<<<<<<< Updated upstream
+=======
+            try:
+                self.comparison_experimental_vs30[kind] = calculate_vs30(
+                    profile_depths, profile_velocities, weight_factor
+                )
+            except ValueError:
+                self.comparison_experimental_vs30[kind] = None
+>>>>>>> Stashed changes
 
     def _activate_comparison_result(self, kind: str) -> None:
         """Show one comparison model in detailed views while retaining overlays."""
@@ -2953,12 +5375,36 @@ class RayPathMainWindow(QMainWindow):
             else:
                 vs30_note = f" Vs30: {self.current_vs30.value_mps:.1f} m/s (fully measured to 30 m)."
         else:
+<<<<<<< Updated upstream
             vs30_note = f" Vs30 unavailable: {self.vs30_unavailable_reason or 'insufficient profile data'}."
         self.result_summary.setText(
             f"{state}. {result.depths_m.size} layers, source offset {self.offset_spin.value():.3f} m, "
             f"{PICK_LABELS.get(str(self.estimator_combo.currentData()), 'Selected')} model, "
             f"regularisation {self.reg_slider.value() / 100.0:.2f}. Final RMSE: {result.rmse_s * 1000.0:.3f} ms."
             f"{vs30_note}"
+=======
+            vs30_note = f" TS Method 1 Vs30 unavailable: {self.vs30_unavailable_reason or 'insufficient profile data'}."
+        if self.observation_review:
+            _accepted, rejected, unreviewed = self._review_counts()
+            review_note = f" Waveform review: {rejected} rejected/excluded; {unreviewed} not reviewed."
+        else:
+            review_note = ""
+        geometry_warning_count = len(self.active_geometry.warnings) if self.active_geometry is not None else 0
+        geometry_note = (
+            f" Receiver offset range {np.min(result.receiver_offsets_m):.3f}–"
+            f"{np.max(result.receiver_offsets_m):.3f} m; {geometry_warning_count} geometry warning(s)."
+        )
+        layer_count = int(result.model_layer_bottoms_m.size) or int(result.depths_m.size)
+        self.result_summary.setText(
+            f"{state}. {layer_count} interpreted constant-Vs layers fitted to {result.depths_m.size} observations, "
+            f"collar source offset {self.offset_spin.value():.3f} m, "
+            f"{PICK_LABELS.get(str(self.estimator_combo.currentData()), 'Selected')} model, "
+            f"no smoothing/regularisation, {result.robust_loss} loss. "
+            f"RMSE: {result.rmse_s * 1000.0:.3f} ms; weighted RMSE: {result.weighted_rmse_s * 1000.0:.3f} ms; "
+            f"data cost: {result.data_cost_ms2:.4g} ms²."
+            f"{geometry_note}{vs30_note}{review_note}"
+            + (" Diagnostics: " + " ".join(result.warnings) if result.warnings else "")
+>>>>>>> Stashed changes
         )
 
     @Slot(str, str)
@@ -2981,39 +5427,213 @@ class RayPathMainWindow(QMainWindow):
         self._worker = None
         self._thread = None
         self.run_button.setEnabled(True)
-        self.run_button.setText("Run RayPath Inversion")
+        self.run_button.setText("Run Layered RayPath Inversion")
         self.input_table.setEnabled(True)
         self.offset_spin.setEnabled(True)
         self.estimator_combo.setEnabled(True)
+<<<<<<< Updated upstream
         self.reg_slider.setEnabled(True)
         self.extrapolation_weight_slider.setEnabled(True)
+=======
+        self.layer_boundary_table.setEnabled(True)
+        self.add_selected_boundary_button.setEnabled(True)
+        self.add_boundary_button.setEnabled(True)
+        self.remove_boundary_button.setEnabled(True)
+        self.clear_boundary_button.setEnabled(True)
+        self.extrapolation_weight_slider.setEnabled(True)
+        self.geometry_button.setEnabled(True)
+        self.robust_loss_combo.setEnabled(True)
+        self.manual_uncertainty_spin.setEnabled(True)
+        self.ensemble_preset_combo.setEnabled(True)
+        self.ensemble_size_spin.setEnabled(True)
+        self.uncertainty_seed_spin.setEnabled(True)
+>>>>>>> Stashed changes
 
     def _populate_results(self, result: InversionResult) -> None:
-        self.result_table.setRowCount(result.depths_m.size)
-        tops = np.r_[0.0, result.depths_m[:-1]]
-        for row in range(result.depths_m.size):
+        model_bottoms, _selected_velocities = result_model_profile(result)
+        self.result_table.setRowCount(model_bottoms.size)
+        tops = np.r_[0.0, model_bottoms[:-1]]
+        observation_layers = np.searchsorted(model_bottoms, result.depths_m, side="left")
+        for row in range(model_bottoms.size):
             velocity_values = []
             for kind in PICK_KINDS:
                 comparison = self.comparison_results.get(kind)
-                if comparison is not None and row < comparison.velocities_mps.size:
-                    velocity_values.append(f"{comparison.velocities_mps[row]:.1f} m/s")
+                if comparison is not None:
+                    _comparison_bottoms, comparison_velocities = result_model_profile(comparison)
+                else:
+                    comparison_velocities = np.empty(0, dtype=float)
+                if row < comparison_velocities.size:
+                    velocity_values.append(f"{comparison_velocities[row]:.1f} m/s")
                 else:
                     velocity_values.append("—")
+<<<<<<< Updated upstream
+=======
+            observations = observation_layers == row
+            layer_residuals_ms = result.residuals_s[observations] * 1000.0
+            layer_rmse_ms = (
+                float(np.sqrt(np.mean(layer_residuals_ms * layer_residuals_ms)))
+                if layer_residuals_ms.size
+                else math.nan
+            )
+            diagnostic_parts = []
+            if result.model_layer_resolution.size == model_bottoms.size:
+                diagnostic_parts.append(f"R={result.model_layer_resolution[row]:.2f}")
+            if result.model_layer_bound_active.size == model_bottoms.size and result.model_layer_bound_active[row]:
+                diagnostic_parts.append("BOUND")
+            if result.outlier_flags.size == result.depths_m.size and np.any(result.outlier_flags[observations]):
+                diagnostic_parts.append("CONTAINS OUTLIER >3σ")
+            if result.influential_flags.size == result.depths_m.size and np.any(result.influential_flags[observations]):
+                diagnostic_parts.append("INFLUENTIAL")
+>>>>>>> Stashed changes
             values = (
                 str(row + 1),
                 f"{tops[row]:.2f} m",
-                f"{result.depths_m[row]:.2f} m",
+                f"{model_bottoms[row]:.2f} m",
                 *velocity_values,
+<<<<<<< Updated upstream
                 f"{result.residuals_s[row] * 1000.0:+.3f} ms",
+=======
+                f"{layer_rmse_ms:.3f} ms RMS ({int(np.count_nonzero(observations))} obs)",
+                "; ".join(diagnostic_parts) or "—",
+>>>>>>> Stashed changes
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column in (0, 3, 4, 5, 6):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+<<<<<<< Updated upstream
                 if column == 6:
                     magnitude = abs(result.residuals_s[row] * 1000.0)
                     item.setForeground(QColor("#3fb950" if magnitude < 1.0 else "#d29922" if magnitude < 3.0 else "#f85149"))
+=======
+                if column == residual_column:
+                    magnitude = (
+                        float(np.max(np.abs(result.standardized_residuals[observations])))
+                        if result.standardized_residuals.size == result.depths_m.size and np.any(observations)
+                        else 0.0
+                    )
+                    item.setForeground(QColor("#3fb950" if magnitude < 2.0 else "#d29922" if magnitude <= 3.0 else "#f85149"))
+                if column == residual_column + 1 and diagnostic_parts[1 if diagnostic_parts and diagnostic_parts[0].startswith("R=") else 0:]:
+                    item.setForeground(QColor("#f85149"))
+>>>>>>> Stashed changes
                 self.result_table.setItem(row, column, item)
+
+    def _interval_comparison_for_result(self, result: InversionResult) -> StaggeredIntervalComparison:
+        """Return the audited staggered-interval comparison for one inversion."""
+
+        recorded_depths = (
+            self.active_geometry.recorded_depths_m
+            if self.active_geometry is not None
+            and self.active_geometry.recorded_depths_m.size == result.depths_m.size
+            else result.depths_m
+        )
+        return staggered_interval_velocity_comparison(
+            recorded_depths,
+            result.depths_m,
+            result.receiver_offsets_m,
+            result.observed_times_s,
+            result.observation_std_s,
+        )
+
+    def _draw_interval_comparison(self, result: InversionResult) -> None:
+        """Plot adjacent and two staggered 1 m observed interval series."""
+
+        canvas = self.interval_canvas
+        canvas.clear()
+        ax = canvas.axes
+        try:
+            comparison = self._interval_comparison_for_result(result)
+        except ValueError as exc:
+            ax.set_title("Staggered 1 m observed interval comparison")
+            ax.set_xlabel("Vs (m/s)")
+            ax.set_ylabel("Corrected vertical depth (m)")
+            ax.text(0.5, 0.5, str(exc), transform=ax.transAxes, ha="center", va="center", color=canvas.muted_color)
+            canvas.draw_idle()
+            return
+
+        adjacent = comparison.adjacent
+        if adjacent.velocities_mps.size:
+            ax.plot(
+                adjacent.velocities_mps,
+                adjacent.centre_depths_m,
+                "--o",
+                color="#8b949e",
+                linewidth=1.0,
+                markersize=3.0,
+                alpha=0.65,
+                label="Adjacent receiver intervals",
+            )
+        phase_specs = (
+            (comparison.phase_a, "#2f81f7", "1 m phase A - whole-metre grid"),
+            (comparison.phase_b, "#f0883e", "1 m phase B - approximately 0.5 m stagger"),
+        )
+        for series, color, label in phase_specs:
+            if not series.velocities_mps.size:
+                continue
+            finite_uncertainty = np.isfinite(series.standard_deviations_mps)
+            if np.any(finite_uncertainty):
+                ax.errorbar(
+                    series.velocities_mps[finite_uncertainty],
+                    series.centre_depths_m[finite_uncertainty],
+                    xerr=1.96 * series.standard_deviations_mps[finite_uncertainty],
+                    fmt="none",
+                    ecolor=color,
+                    elinewidth=0.8,
+                    capsize=2,
+                    alpha=0.35,
+                )
+            ax.plot(
+                series.velocities_mps,
+                series.centre_depths_m,
+                "-o",
+                color=color,
+                linewidth=1.6,
+                markersize=4.0,
+                label=label,
+            )
+        if comparison.slowness_mean_velocities_mps.size:
+            ax.plot(
+                comparison.slowness_mean_velocities_mps,
+                comparison.slowness_mean_depths_m,
+                "-s",
+                color="#147d75",
+                linewidth=2.6,
+                markersize=4.0,
+                label="Experimental staggered slowness mean",
+            )
+        model_bottoms, model_velocities = result_model_profile(result)
+        ax.stairs(
+            model_velocities,
+            np.r_[0.0, model_bottoms],
+            orientation="horizontal",
+            color=canvas.foreground_color,
+            linewidth=1.5,
+            alpha=0.8,
+            label="Selected RayPath model",
+        )
+        for boundary in model_bottoms[:-1]:
+            ax.axhline(boundary, color=canvas.muted_color, linewidth=0.8, linestyle=":", alpha=0.75)
+        ax.set_title(
+            f"Path-length interval sensitivity - {PICK_LABELS.get(str(self.estimator_combo.currentData()), 'selected')} picks"
+        )
+        ax.set_xlabel("Vs (m/s)")
+        ax.set_ylabel("Corrected vertical depth (m)")
+        ax.set_xlim(0.0, VELOCITY_PROFILE_DISPLAY_MAX)
+        ax.set_ylim(float(result.depths_m[-1]), 0.0)
+        ax.text(
+            0.01,
+            0.01,
+            "1 m windows overlap by approximately 0.5 m and are correlated.\n"
+            "The slowness mean is an experimental sensitivity display, not an independent layer model.",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8,
+            color=canvas.muted_color,
+            bbox={"facecolor": canvas.figure_color, "edgecolor": canvas.grid_color, "alpha": 0.9, "pad": 3},
+        )
+        ax.legend(**canvas.legend_kwargs())
+        canvas.draw_idle()
 
     def _draw_results(self, result: InversionResult) -> None:
         z = result.depths_m
@@ -3029,10 +5649,11 @@ class RayPathMainWindow(QMainWindow):
             comparison = self.comparison_results.get(kind)
             if comparison is None:
                 continue
-            comparison_edges = np.r_[0.0, comparison.depths_m]
-            all_velocities.append(comparison.velocities_mps)
+            comparison_bottoms, comparison_velocities = result_model_profile(comparison)
+            comparison_edges = np.r_[0.0, comparison_bottoms]
+            all_velocities.append(comparison_velocities)
             ax.stairs(
-                comparison.velocities_mps,
+                comparison_velocities,
                 comparison_edges,
                 orientation="horizontal",
                 color=MODEL_COLORS[kind],
@@ -3040,25 +5661,96 @@ class RayPathMainWindow(QMainWindow):
                 alpha=1.0 if kind == selected_kind else 0.82,
                 label=PICK_LABELS[kind],
             )
+<<<<<<< Updated upstream
         ax.set_title("Pick-based shear-wave velocity comparison")
+=======
+            uncertainty = self.uncertainty_results.get(kind)
+            if kind == selected_kind and uncertainty is not None:
+                envelope_edges = np.r_[0.0, comparison.depths_m]
+                lower = np.r_[uncertainty.velocity_lower_mps, uncertainty.velocity_lower_mps[-1]]
+                upper = np.r_[uncertainty.velocity_upper_mps, uncertainty.velocity_upper_mps[-1]]
+                ax.fill_betweenx(
+                    envelope_edges,
+                    lower,
+                    upper,
+                    step="post",
+                    color=MODEL_COLORS[kind],
+                    alpha=0.18,
+                    label=(
+                        ("Preliminary " if uncertainty.requested_models < REPORT_QUALITY_ENSEMBLE_MINIMUM else "Report-quality ")
+                        + f"{uncertainty.percentile_levels[0]:g}–{uncertainty.percentile_levels[2]:g}% "
+                        "pick-time ensemble"
+                    ),
+                )
+        ax.set_title("Interpreted layered shear-wave velocity comparison")
+>>>>>>> Stashed changes
         ax.set_xlabel("Vs (m/s)")
         ax.set_ylabel("Depth (m)")
         ax.set_ylim(z[-1], 0.0)
+<<<<<<< Updated upstream
         finite = np.concatenate([raw[np.isfinite(raw)], *all_velocities]) if all_velocities else raw[np.isfinite(raw)]
         if finite.size:
             ax.set_xlim(max(0.0, float(np.min(finite)) * 0.8), float(np.max(finite)) * 1.15)
         ax.legend(facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
+=======
+        ax.set_xlim(0.0, VELOCITY_PROFILE_DISPLAY_MAX)
+        ax.set_xticks(np.arange(0.0, VELOCITY_PROFILE_DISPLAY_MAX + 1.0, 100.0))
+        selected_bottoms, _selected_velocities = result_model_profile(result)
+        for boundary in selected_bottoms[:-1]:
+            ax.axhline(boundary, color=self.velocity_canvas.muted_color, linewidth=0.8, linestyle=":", alpha=0.75)
+        raw_above_limit = int(np.count_nonzero(np.isfinite(raw) & (raw > VELOCITY_PROFILE_DISPLAY_MAX)))
+        model_above_limit = sum(
+            int(np.count_nonzero(values > VELOCITY_PROFILE_DISPLAY_MAX))
+            for values in all_velocities
+        )
+        if raw_above_limit or model_above_limit:
+            clipped_parts = []
+            if raw_above_limit:
+                clipped_parts.append(f"{raw_above_limit} raw")
+            if model_above_limit:
+                clipped_parts.append(f"{model_above_limit} modeled")
+            ax.text(
+                0.99,
+                0.01,
+                f"Values above {VELOCITY_PROFILE_DISPLAY_MAX:.0f} m/s outside view: "
+                + ", ".join(clipped_parts),
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                color="#d29922",
+                fontsize=8,
+                bbox={
+                    "facecolor": self.velocity_canvas.figure_color,
+                    "edgecolor": "#6e5b25",
+                    "alpha": 0.9,
+                    "pad": 3,
+                },
+            )
+        ax.legend(**self.velocity_canvas.legend_kwargs())
+>>>>>>> Stashed changes
         self.velocity_canvas.draw_idle()
 
         ax = self.ray_canvas.axes
         self.ray_canvas.clear()
         x_offset = self.offset_spin.value()
+<<<<<<< Updated upstream
         for boundary in edges:
             ax.hlines(boundary, 0.0, x_offset, color="#48515c", linewidth=0.7, alpha=0.7)
+=======
+        plot_min = min(0.0, float(np.min(receiver_offsets)), x_offset)
+        plot_max = max(0.0, float(np.max(receiver_offsets)), x_offset)
+        model_bottoms, _model_velocities = result_model_profile(result)
+        for boundary in np.r_[0.0, model_bottoms]:
+            ax.hlines(boundary, plot_min, plot_max, color=self.ray_canvas.grid_color, linewidth=0.7, alpha=0.7)
+>>>>>>> Stashed changes
         color_map = colormaps["viridis"]
         for i, segments in enumerate(result.ray_x_segments):
             ray_x = np.r_[0.0, np.cumsum(segments)]
-            ray_z = edges[: i + 2]
+            ray_z = (
+                result.ray_z_nodes_m[i]
+                if len(result.ray_z_nodes_m) == len(result.ray_x_segments)
+                else edges[: i + 2]
+            )
             ax.plot(ray_x, ray_z, color=color_map((i + 1) / len(result.ray_x_segments)), linewidth=1.25, alpha=0.9)
         ax.axvline(x_offset, color="#f0f6fc", linewidth=1.8, label="Borehole")
         ax.scatter([0.0], [0.0], marker="*", s=110, color="#ffcc66", zorder=5, label="Source")
@@ -3103,6 +5795,9 @@ class RayPathMainWindow(QMainWindow):
         calculated_ms = result.calculated_times_s * 1000.0
         for depth, observed, calculated in zip(z, observed_ms, calculated_ms):
             ax.plot([observed, calculated], [depth, depth], color="#8b949e", linewidth=0.8)
+        selected_bottoms, _selected_velocities = result_model_profile(result)
+        for boundary in selected_bottoms[:-1]:
+            ax.axhline(boundary, color=self.fit_canvas.muted_color, linewidth=0.8, linestyle=":", alpha=0.75)
         ax.set_title(
             f"Arrival-time comparison — selected {PICK_LABELS.get(selected_kind, selected_kind)} "
             f"RMSE {result.rmse_s * 1000.0:.3f} ms"
@@ -3112,6 +5807,7 @@ class RayPathMainWindow(QMainWindow):
         ax.set_ylim(z[-1], 0.0)
         ax.legend(facecolor="#161b22", edgecolor="#48515c", labelcolor="#c9d1d9")
         self.fit_canvas.draw_idle()
+        self._draw_interval_comparison(result)
         self._draw_vs30_analysis()
 
     # ---- lifecycle and dialogs ------------------------------------------
@@ -3151,8 +5847,14 @@ class RayPathMainWindow(QMainWindow):
         QMessageBox.about(
             self,
             f"About {APP_NAME}",
+<<<<<<< Updated upstream
             "<h3>RayPath SCPT</h3>"
             "<p>SI-only SCPT arrival-time picking and regularised shear-wave velocity inversion.</p>"
+=======
+            f"<h3>RayPath SCPT {APP_VERSION}</h3>"
+            f"<p>Project schema version {PROJECT_SCHEMA_VERSION}.</p>"
+            "<p>SI-only SCPT arrival-time picking and analyst-defined layered shear-wave velocity inversion.</p>"
+>>>>>>> Stashed changes
             "<p>The direct-ray forward model solves Snell's-law refraction with SciPy Brent root finding; "
             "layer velocities are estimated with bounded L-BFGS-B least squares.</p>"
             f"<p>GRU imports apply the undocumented {GRU_PRE_TRIGGER_MS:g} ms pre-trigger correction before picking "
@@ -3223,14 +5925,38 @@ def application_stylesheet() -> str:
 def run_self_test() -> int:
     """Run a deterministic numerical round-trip test without starting the GUI."""
 
-    depths = np.asarray([2.0, 4.0, 6.0, 8.0, 10.0])
-    thicknesses = np.diff(np.r_[0.0, depths])
-    expected_vs = np.asarray([180.0, 210.0, 240.0, 280.0, 320.0])
-    times, rays = forward_model(thicknesses, expected_vs, 2.4)
+    depths = np.asarray([2.0, 4.0, 6.0, 9.0, 12.0, 16.0, 20.0, 25.0])
+    layer_bottoms = np.asarray([6.0, 16.0, 25.0])
+    expected_vs = np.asarray([180.0, 270.0, 390.0])
+    times, rays, ray_z_nodes = forward_layered_model(depths, layer_bottoms, expected_vs, 2.4)
     assert times.shape == depths.shape
     assert all(abs(np.sum(ray.horizontal_segments_m) - 2.4) < 1.0e-8 for ray in rays)
+<<<<<<< Updated upstream
     result = invert_velocity_profile(depths, times, 2.4, regularization=0.0)
     assert result.rmse_s < 1.0e-6, result.rmse_s
+=======
+    assert all(nodes[-1] == depth for nodes, depth in zip(ray_z_nodes, depths))
+    result = invert_layered_velocity_profile(
+        depths,
+        times,
+        2.4,
+        layer_bottoms,
+        observation_std_s=np.full(depths.size, 0.0005),
+    )
+    assert result.rmse_s < 1.0e-6, result.rmse_s
+    assert np.allclose(result.model_layer_velocities_mps, expected_vs, rtol=2.0e-4)
+    assert result.regularization_cost == 0.0
+    first_ensemble = generate_layered_velocity_uncertainty_ensemble(
+        result, 2.4, ensemble_size=4, random_seed=11705
+    )
+    second_ensemble = generate_layered_velocity_uncertainty_ensemble(
+        result, 2.4, ensemble_size=4, random_seed=11705
+    )
+    assert np.allclose(first_ensemble.velocity_lower_mps, second_ensemble.velocity_lower_mps)
+    assert np.allclose(first_ensemble.velocity_median_mps, second_ensemble.velocity_median_mps)
+    assert np.allclose(first_ensemble.velocity_upper_mps, second_ensemble.velocity_upper_mps)
+    assert np.allclose(first_ensemble.vs30_samples_mps, second_ensemble.vs30_samples_mps)
+>>>>>>> Stashed changes
     vs30 = calculate_vs30([10.0, 20.0, 40.0], [200.0, 400.0, 800.0])
     assert abs(vs30.value_mps - (30.0 / (10.0 / 200.0 + 10.0 / 400.0 + 10.0 / 800.0))) < 1.0e-10
     assert abs(float(np.sum(vs30.included_thicknesses_m)) - 30.0) < 1.0e-10

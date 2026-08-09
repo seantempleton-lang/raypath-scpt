@@ -1,0 +1,818 @@
+# RayPath SCPT — Project State and Development Roadmap
+
+**Document status:** Living project specification  
+**Snapshot date:** 6 August 2026
+**Application status:** Development alpha; suitable for internal development and evaluation, but not yet approved for unreviewed engineering use  
+**Primary platform:** Windows desktop, Python 3.12, PySide6  
+**Units:** SI only — metres (m), milliseconds (ms), and metres per second (m/s)
+
+## 0. Current roadmap progress
+
+**M0 — Baseline freeze: in progress**
+
+Completed on 5 August 2026:
+
+- assigned application version `0.1.0-alpha.1` and explicit project schema version 3;
+- recorded version identifiers in projects, CSV exports, PDF reports, the application metadata, and About dialog;
+- retained backward-compatible loading for project schemas 1, 2, and 3;
+- added headless numerical, inversion, Vs30, and GRU regression tests;
+- added offscreen project round-trip and legacy migration tests;
+- added a synthetic paired-waveform GRU fixture and reviewed project fixture; and
+- added `scripts/verify.cmd` as the policy-independent local release verification command, with a PowerShell equivalent in `scripts/verify.ps1`.
+
+Remaining before M0 is closed:
+
+- capture approved visual reference images and a reference PDF from a suitable de-identified real dataset; and
+- connect the verification command to the future automated build/release workflow.
+
+**M1 — Technically corrected picker and Vs30: in progress**
+
+Completed on 5 August 2026 (WP-01A — arrival-definition correction):
+
+- updated the application to `0.2.0-alpha.1` and project schema 4;
+- introduced one true pairwise waveform-crossover time per reversed trace pair;
+- renamed the former per-trace `first_cross` interpretation to individual zero crossing and labelled it experimental;
+- retained first peak/trough and maximum-peak comparisons, with maximum peak labelled experimental;
+- expanded the guided picker from six to seven reviewed marks and updated all plots, tables, CSV exports, Vs30 comparisons, and PDF report tables;
+- added deterministic pair-crossover and schema-migration tests; and
+- preserved schema-1-to-3 values as individual zero crossings without silently reclassifying them as pair crossovers.
+
+Completed on 5 August 2026 (WP-01B — minimum waveform QC and review state):
+
+- updated the application to `0.3.0-alpha.1` and project schema 5;
+- added advisory per-record SNR, sign-reversed correlation and lag, first peak/trough polarity and timing,
+  clipping, constant-trace, and sample-interval QC metrics;
+- added a normalised butterfly overlay and live warning display in the picker;
+- added analyst states for accepted, accepted with comment, rejected, and not reviewed;
+- added an auditable arrival-time uncertainty field with a half-sample default;
+- excluded only explicitly rejected records from inversion and made exclusions visible in the input table and
+  waveform waterfall;
+- added project persistence, a companion waveform-QC CSV, and PDF QC/exclusions and comments schedules; and
+- verified the advisory thresholds against the supplied 74-record GRU profile without automatic rejection.
+
+Completed on 5 August 2026 (WP-02A — pre-trigger timing auditability):
+
+- updated the application to `0.4.0-alpha.1` and project schema 6;
+- added a GRU import timing dialog with a visible, editable 50 ms default;
+- retained the original recorded sample clock and trigger-relative analysis clock in memory;
+- stored the applied correction, recorded/relative sample bounds, sample interval, and both time references for
+  every saved pick;
+- reloaded raw GRU data using the correction saved with the project and rejected inconsistent timing audit data;
+- added the applied correction and arrival-time reference to PDF and CSV outputs; and
+- retained migration support for project schemas 1 through 5.
+
+Completed on 5 August 2026 (WP-02B — survey geometry and corrected receiver coordinates):
+
+- updated the application to `0.5.0-alpha.1` and project schema 7;
+- added a Survey Geometry & Cone Deviation editor for offset uncertainty, coordinate system, datum, source and
+  receiver-reference elevations, depth reference, rod/vertical depth basis, source/block/strike/receiver bearings,
+  notes, and interval inclination/azimuth;
+- calculated corrected vertical depths and plan receiver coordinates at every observation;
+- imported GRU channels #30/#31 as signed X/Y cone inclination, integrated the dense samples into an equivalent
+  inclination for every seismic interval, and applied the resulting vertical-depth correction without inventing
+  an unrecorded global deviation azimuth;
+- extended the Snell's-law forward model and inversion to use a receiver-specific horizontal offset at every depth;
+- added advisory checks for the typical 1–3 m offset, missing survey fields, source-block perpendicularity,
+  opposing strike directions, missing deviation azimuth, and invalid corrected depths;
+- invalidated model results whenever offset, depth, or geometry inputs change;
+- added corrected receiver paths to visualisations and geometry schedules to project, CSV, and PDF outputs; and
+- retained migration support for project schemas 1 through 6 using explicit nominal-geometry warnings.
+
+Completed on 5 August 2026 (WP-03A — standards-facing TS 1170.5:2025 Method 1 Vs30):
+
+- updated the application to `0.6.0-alpha.1` and project schema 8;
+- added a separate audited Method 1 calculation for direct SCPT/downhole Vs measurements to at least 25 m;
+- implemented the prescribed 0–3 m shallow adjustment using the depth-average measured from 2.5–3.5 m;
+- extended the last measured layer to 30 m where required and clipped deeper profiles exactly at 30 m;
+- added central, lower (`Vs30 / 1.05`), and upper (`1.05 × Vs30`) results with numerical Vs30-band screening;
+- exposed raw and standards-adjusted Vs30, measured/extended thickness, slow-profile screening, and method notes;
+- separated the pre-existing weighted extrapolation into a persistently labelled experimental sensitivity control;
+- added Method 1 audit fields to project files, CSV exports, the application view, status summaries, and PDF reports; and
+- added backend and offscreen-GUI regression tests covering depth limits, shallow adjustment, extrapolation,
+  uncertainty bounds, numerical-band crossings, slow upper profiles, and isolation from experimental weighting.
+
+Completed on 5 August 2026 (WP-04 — depth-aware regularisation and quantified uncertainty):
+
+- updated the application to `0.7.0-alpha.1` and project schema 9;
+- replaced index-based smoothing with a depth-aware, physically scaled log-velocity derivative operator;
+- added per-arrival one-sigma uncertainty weights, transparent QC-derived defaults, and analyst override;
+- added linear and Huber losses, standardised residuals, leverage/influence diagnostics, resolution indicators,
+  velocity-bound flags, and separate data and regularisation costs;
+- added automatic L-curve regularisation selection while retaining manual smoothing control;
+- added seeded pick-time perturbation ensembles with velocity and Method 1 Vs30 confidence intervals;
+- made ensembles opt-in for responsive interpretation, with Off, 20-model preliminary preview, 200-model final
+  report, and custom presets; outputs below 100 models are explicitly labelled preliminary;
+- exposed uncertainty bars, velocity envelopes, diagnostic flags, settings, and costs in the UI, project, CSV,
+  and PDF outputs; and
+- added numerical, ensemble-repeatability, project-migration, worker, and report regression coverage.
+
+Completed on 6 August 2026 (WP-05A - staggered observed interval comparator):
+
+- updated the application to `0.8.0-alpha.1` and project schema 10;
+- added observed interval velocity from corrected geometric source-to-receiver path-length differences rather
+  than uncorrected depth differences;
+- added two 1.0 m interval series, one anchored to whole-metre recorded depths and one
+  approximately 0.5 m staggered, using a transparent +/-0.15 m receiver-spacing tolerance;
+- retained the adjacent-receiver series to expose pick-error sensitivity and added approximate propagated
+  velocity uncertainty from the accepted arrival-time uncertainty;
+- added an explicitly experimental mean formed in slowness space, with warnings that the overlapping series are
+  correlated and are not independent layer models;
+- added an in-application comparison tab, project audit data, a companion interval-comparison CSV, and a
+  full-page PDF figure; and
+- added numerical and offscreen-GUI regression coverage for alternating pick error, non-zero source offset,
+  phase display, project persistence, and CSV export.
+
+Completed on 6 August 2026 (WP-05B - interpretive layered RayPath model):
+
+- updated the application to `0.9.0-alpha.1` and project schema 11;
+- retired receiver-by-receiver smoothing and L-curve selection from the production interpretation workflow;
+- added an analyst-defined, piecewise-constant layered RayPath inversion with one velocity parameter per
+  interpreted layer and no roughness or regularisation penalty;
+- added a boundary editor with an auditable interpretive basis for each boundary, geometry correction from
+  recorded to corrected vertical depth, and a minimum of two receiver observations per layer;
+- prevented underdetermined or rank-deficient layer models and retained observation-uncertainty weighting,
+  optional robust residual handling, pick-definition comparison, and fixed-geometry uncertainty ensembles;
+- updated velocity, arrival-fit, ray-path, results, Vs30, project, CSV, and PDF outputs to use and disclose the
+  interpreted layers; and
+- added synthetic exact-recovery, invalid-parameterisation, worker, project-round-trip, and export coverage.
+
+The next active item is WP-05C: add the corrected-time slope plot and interactive segment fitting as an independent
+boundary-selection and velocity comparator. WP-03 Method 2 remains
+a later extension for partially measured profiles; Method 3 remains deferred until its supporting inputs and
+provenance can be represented correctly.
+
+## 1. Purpose
+
+RayPath SCPT is a desktop application for processing Seismic Cone Penetration Test (SCPT) records. Its principal objective is to reduce false or unphysical interval-velocity spikes by fitting measured shear-wave arrival times with a one-dimensional, refracted ray-path model governed by Snell's Law.
+
+The application is intended to provide a transparent workflow from raw waveform review through arrival-time picking, velocity interpretation, Vs30 calculation, visualisation, and reporting. It is not intended to replace engineering judgement, geological interpretation, field quality control, or independent technical review.
+
+This document records:
+
+- the current implemented state of the application;
+- the technical limitations that remain;
+- the recommended sequence of development;
+- the implementation pathway and acceptance criteria for each work package; and
+- the release gates that should be satisfied before producing a portable application.
+
+## 2. Technical reference framework
+
+Development should be informed by the current editions or status of the following sources. The application must identify the method and edition used in every standards-facing output rather than making a generic claim of compliance.
+
+- [MBIE/NZGS Earthquake Geotechnical Engineering Practice, Module 2 — Geotechnical investigations for earthquake engineering, Revision 1](https://www.building.govt.nz/assets/Uploads/building-code-compliance/b-stability/b1-structure/geotechnical-guidelines/module-2-geotech-investigations-earthquake-engineering-version-1.pdf)
+- [NZ Ground Investigation Specification](https://www.nzgs.org/libraries/nz-ground-investigation-specification/)
+- [ASTM D7400/D7400M-26 — Standard Test Methods for Downhole Seismic Testing](https://store.astm.org/d7400_d7400m-26.html)
+- [NZSEE — Site classification methodology for TS 1170.5 design spectra](https://bulletin.nzsee.org.nz/index.php/bnzsee/article/view/1686)
+- [Engineering New Zealand — status of TS 1170.5:2025 and NZS 1170.5:2004](https://www.engineeringnz.org/news-insights/new-technical-specifications-for-seismic-design/)
+- [NZGS — The use of SCPT and HVSR for site period and subsoil class estimation](https://www.nzgs.org/libraries/the-use-of-scpt-and-hvsr-for-site-period-and-subsoil-class-estimation-2/)
+
+At this snapshot date, NZS 1170.5:2004 remains referenced by the New Zealand Building Code. TS 1170.5:2025 is available as a voluntary Technical Specification and may be used through an Alternative Solution pathway. The software should support both contexts without treating them as interchangeable.
+
+## 3. Current application state
+
+### 3.1 Architecture and dependencies
+
+The application is implemented as a single Python file, `raypath_scpt.py`, with the following dependencies recorded in `requirements.txt`:
+
+- PySide6 6.8 or later;
+- NumPy 2.1 or later;
+- SciPy 1.14 or later;
+- Matplotlib 3.9 or later; and
+- ReportLab 4.2 or later.
+
+The current single-file architecture was useful during rapid prototyping. It now makes isolated testing, controlled changes, versioned data migration, and packaging more difficult. Refactoring is recommended after the technical calculation interfaces have been stabilised.
+
+### 3.2 Data import and project state
+
+Implemented:
+
+- Direct import of GOnsite/GORILLA `.GRU` records.
+- Interpretation of channels 17 and 18 as the left and right source-direction traces.
+- A visible GRU import timing dialog with an editable 50 ms default.
+- Preservation of original recorded time and corrected trigger-relative time for every waveform.
+- Schema-6 timing audit data including the applied correction, time bounds, sample interval, and both time
+  references for every pick.
+- Schema-7 survey geometry including datum, depth basis, source/receiver orientation, interval deviation, and
+  calculated receiver coordinates.
+- Automatic GRU #30/#31 cone-tilt import, receiver-interval vertical projection, and an explicit warning that
+  horizontal deviation requires a known inclinometer-axis orientation/azimuth.
+- Validation that imported time arrays increase monotonically and span the configured trigger time.
+- Editable manual input table for depth and four arrival interpretations: first peak/trough, pair crossover,
+  experimental individual zero crossing, and experimental maximum peak.
+- Excel/CSV-style grid paste support.
+- Project creation, opening, saving, and Save As using the `.rpscpt` project format.
+- CSV export.
+- No demonstration or synthetic observations are loaded into a new project.
+
+Current limitations:
+
+- There is no raw-file hash, imported-file manifest, or project change history.
+- Instrument identity, calibration, operator, test date, and site location coordinates are not yet captured in a
+  broader investigation metadata model; survey geometry and coordinate/datum names are captured in schema 7.
+
+### 3.3 Waveform picker
+
+Implemented:
+
+- Paired display of channel 17 in blue and channel 18 in red.
+- A maximisable and minimisable picker window.
+- Automatic zoom to a user-selectable window, defaulting to 20 ms either side of the maximum peak region.
+- Guided seven-pick workflow: left/right first peak or trough, one pair crossover, left/right individual zero
+  crossing, and left/right maximum peak.
+- Automatic movement to the next required pick.
+- Save-and-next or re-pick prompt after completing an interval.
+- One-click acceptance of the current automatic or manually adjusted picks, followed by advancement to the next
+  interval.
+- Pick mode can be restored after using Matplotlib navigation without losing the current zoom extent.
+- Bold, enlarged live pick-value display.
+- Suggested picks based on pre-trigger baseline noise, a smoothed trace, amplitude thresholds, local extrema,
+  individual trace zero crossings, and a post-arrival intersection of independently normalised reversed traces.
+- A normalised sign-reversed butterfly overlay for paired-trace comparison.
+- Live per-depth SNR, sign-reversed correlation and lag, polarity, peak/trough disagreement, clipping,
+  constant-trace, and sample-interval QC warnings.
+- Analyst review states, comments, and arrival-time uncertainty, with a half-sample default.
+- Explicit rejection and visible exclusion from inversion.
+- A waveform waterfall plot containing the reviewed picks.
+
+Current limitations:
+
+- Peak/trough terminology and polarity validation are not explicitly enforced.
+- Maximum peak is useful for sensitivity comparison but is not a primary arrival definition in the referenced downhole guidance.
+- First peak/trough and experimental per-trace times are arithmetically averaged without first requiring a
+  polarity, phase, timing, or quality-consistency check.
+- The automatically suggested pair crossover uses amplitude normalisation for robustness but has no current
+  correlation or butterfly-quality threshold; it must be manually reviewed.
+- The current QC thresholds are transparent engineering defaults but have not yet been calibrated against a
+  sufficiently broad labelled dataset or independently validated.
+- One uncertainty value applies to the accepted arrival at a depth; separate uncertainty values for every
+  comparison pick are not implemented.
+- The same recorded uncertainty currently weights all arrival definitions at a depth; pick-definition-specific
+  uncertainty is not yet implemented.
+- Repeated impacts at the same depth cannot yet be retained individually and stacked.
+
+### 3.4 Numerical backend
+
+Implemented:
+
+- A one-dimensional, horizontally layered direct-ray model.
+- A common ray parameter, `p = sin(theta) / Vs`, across crossed layers.
+- Brent root solving below the critical ray-parameter limit.
+- Theoretical travel time calculated along refracted layer segments.
+- One calculated travel time and ray geometry for each successively deeper receiver.
+- Logarithmic velocity parameterisation bounded between 50 m/s and 2,000 m/s.
+- L-BFGS-B minimisation of arrival-time misfit.
+- An analytical travel-time gradient based on Fermat's principle.
+- Analyst-defined horizontal layer boundaries with one constant velocity parameter per interpreted layer.
+- No velocity smoothing, roughness penalty, or regularisation term in the production inversion workflow.
+- Prevention of underdetermined/rank-deficient models and a UI minimum of two receiver observations per layer.
+- Background-thread execution so the GUI remains responsive.
+- Comparison models for first peak/trough, true pair crossover, experimental individual zero crossing, and
+  experimental maximum peak picks.
+- Adjacent and staggered 1 m observed interval-velocity comparisons based on corrected geometric path-length
+  differences, with propagated pick-time uncertainty and an experimental slowness-space composite.
+
+Current limitations:
+
+- The model assumes horizontal, laterally homogeneous layers and a direct arrival. It does not model dipping layers, lateral variation, anisotropy, head waves, converted waves, or complex non-direct first arrivals.
+- Corrected plan coordinates are reduced to radial source-to-receiver offset for the horizontally layered 1D model;
+  the model does not represent a genuinely three-dimensional ray path, lateral variation, or azimuthal anisotropy.
+- Interpreted boundary locations are epistemic inputs and can materially affect the fitted velocities and Vs30;
+  their evidence and analyst judgement must be documented.
+- There is no corrected vertical travel-time slope plot or CPT/borelog overlay yet to support boundary selection.
+- Linearised resolution, leverage, and influence measures are diagnostics and should not be interpreted as a full
+  posterior covariance analysis.
+- Pick-time ensembles represent recorded arrival uncertainty only; they do not quantify structural uncertainty
+  from the one-dimensional horizontal-layer assumption, arrival-definition choice, or interpreted layer geometry.
+- No slope-based interpretation is yet calculated for independent comparison.
+
+### 3.5 Visualisation and results
+
+Implemented:
+
+- Velocity-profile comparison, including raw pseudo-interval and interpreted piecewise-constant RayPath profiles.
+- A dedicated observed interval-sensitivity view comparing adjacent intervals, two staggered 1 m phases, an
+  experimental slowness mean, and the selected RayPath model.
+- Ray-path cross-section with a horizontally stretchable plot.
+- Observed and calculated arrival-time fit.
+- Waveform waterfall with picks.
+- Comparison of all available pick-derived velocity models.
+- User-selectable light and dark interface themes, with light mode as the application default.
+- Results table with interpreted layer depths, basis, velocity, fitting error, and observation count.
+- Convergence, raw and weighted RMSE, data cost, standardised residuals, resolution, leverage,
+  influence, outlier, and velocity-bound reporting.
+- Selected-model 95% velocity envelopes and arrival-time uncertainty bars.
+
+Current limitations:
+
+- There is no corrected vertical travel-time plot or slope-method interpretation.
+- CPT stratigraphy cannot yet be imported or overlaid to assist the user-defined boundary interpretation.
+- Rejected waveform records are visibly excluded and omitted at the next inversion, but plot-based toggling is
+  not yet available outside the waveform picker.
+
+### 3.6 Vs30 analysis
+
+Implemented:
+
+- `Vs30 = 30 / sum(h_i / Vs_i)` using vertical shear-wave travel time.
+- Truncation of layers that cross 30 m.
+- Comparison of Vs30 from all four arrival interpretations.
+- Recalculation after revising interpreted layer boundaries, with all pick definitions shown for comparison.
+- Extrapolation from profiles reaching at least 25 m.
+- An experimental 0.25-to-4.0 slider that changes the shallower/deeper weighting used to estimate the missing 25-to-30 m interval.
+- A separate TS 1170.5:2025 Method 1 result with the prescribed shallow treatment, last-layer extension, 5% bounds,
+  numerical-band screening, and a seeded pick-time ensemble interval.
+
+Current limitations:
+
+- Method 2 for partially measured profiles is not implemented.
+- Numerical Vs30 bands are screening information only and are not a final TS site classification.
+- The pick-time ensemble interval is distinct from the prescribed Method 1 5% bounds and does not include every
+  source of model or field uncertainty.
+
+### 3.7 PDF reporting and branding
+
+Implemented:
+
+- Branded PDF report using the selected Cone & Ray identity and Field Teal theme.
+- Full-page engineering plots.
+- Velocity, staggered-interval, arrival-fit, ray-path, and waveform-waterfall figures.
+- Tables of reviewed picks, model results, RMSE, and Vs30 comparisons.
+- A waveform-QC and exclusions schedule, analyst comments, uncertainty, a companion receiver-level QC CSV, and
+  a companion observed interval-comparison CSV.
+- Layer-based Vs30 comparison across all valid arrival definitions; the retired smoothing-sensitivity report page
+  remains omitted.
+
+Current limitations:
+
+- The report provides QC, exclusions, calculation settings, uncertainty, and standards-method summaries, but does
+  not yet provide complete project/equipment metadata, reviewer sign-off, or a controlled model-applicability statement.
+- The report cannot establish reproducibility through a raw-file hash, software build identifier, calculation configuration, or complete audit trail.
+
+## 4. Governing development principles
+
+The following decisions should remain in force unless they are deliberately superseded and recorded:
+
+1. All public engineering inputs and outputs remain SI only.
+2. Raw imported waveform samples are immutable; corrections and processing are stored as derived data.
+3. The 50 ms GRU pre-trigger value remains the default for the known equipment, but becomes visible and configurable per import/project.
+4. Standards-facing results and experimental sensitivity results are clearly separated.
+5. The existing weighting slider is retained only as experimental sensitivity unless a recognised method explicitly requires it.
+6. A result is never labelled simply "NZ compliant". The relevant document, edition, method, assumptions, and uncertainty treatment are named.
+7. Maximum peak and individual zero-crossing results may remain for comparison but are not mislabelled as standard peak/trough or crossover methods.
+8. Velocity reversals are not automatically suppressed; real reversals are possible and should be assessed against waveform quality and geology.
+9. Vs alone is not used as the sole basis for liquefaction assessment.
+10. Automated suggestions assist the analyst but do not silently replace reviewed picks.
+11. Every engineering result must be reproducible from the saved project, source data, application version, and calculation settings.
+12. Vertical resolution is controlled by documented interpreted layer boundaries, not by a receiver-by-receiver
+    smoothing factor; alternative defensible boundaries are rerun as explicit model uncertainty.
+
+## 5. Roadmap overview
+
+| Milestone | Outcome | Release meaning |
+|---|---|---|
+| M0 — Baseline freeze | Existing behaviour documented and protected by tests | Current internal alpha can be changed safely |
+| M1 — Technically corrected picker and Vs30 | Picking terminology, QC, trigger handling, and TS Method 1 corrected | Suitable for controlled internal technical evaluation |
+| M2 — Quantified layered inversion | Reduced-parameter interpreted layers, observation weighting, uncertainty, and comparator methods implemented | Engineering beta suitable for formal validation |
+| M3 — NZ reporting workflow | Dual NZS/TS context, metadata, audit trail, site-period support, and defensible report completed | Release candidate for expert review |
+| M4 — Validated portable release | Independent review, reference datasets, regression suite, refactor, installer/portable build, and signed release | Controlled production deployment |
+
+Packaging begins only after the M3 release gates are satisfied and the M4 validation evidence is substantially complete.
+
+## 6. Detailed work packages
+
+### WP-00 — Establish the verified baseline
+
+**Objective:** Protect the current working behaviour before changing calculation definitions or file structures.
+
+**Implementation pathway:**
+
+1. Assign an internal semantic version and expose it in the About dialog, project file, CSV, and PDF.
+2. Create a `tests/` directory and separate numerical tests from the GUI entry point.
+3. Add deterministic tests for:
+   - homogeneous direct rays;
+   - two- and multi-layer refracted rays;
+   - zero and non-zero offsets;
+   - near-critical ray parameters;
+   - synthetic inversion recovery;
+   - GRU pre-trigger conversion;
+   - project save/open round-tripping;
+   - all existing Vs30 calculations; and
+   - legacy project migration.
+4. Preserve at least one de-identified GRU reference dataset and its reviewed project as a regression fixture, subject to data permissions.
+5. Record current screenshots and a reference PDF for visual regression review.
+
+**Acceptance criteria:**
+
+- Numerical tests run without starting Qt.
+- Known synthetic travel times reproduce to documented tolerances.
+- Existing project files load without loss of picks or settings.
+- A failed regression test blocks a release build.
+
+**Dependencies:** None. This is the first work package.
+
+### WP-01 — Correct arrival definitions and add waveform QC
+
+**Objective:** Align the picker with recognised downhole seismic interpretation while preserving useful experimental comparisons.
+
+**Implementation pathway:**
+
+1. Introduce distinct pick identifiers:
+   - first arrival (FA), optional/manual;
+   - first peak/trough (PT), pair-aware;
+   - first waveform crossover (CO), one time per reversed pair;
+   - cross-correlation interval time (CC), later/optional;
+   - individual trace zero crossings, experimental; and
+   - maximum absolute peak, experimental.
+2. Rename the current `first_cross` data during project migration to avoid silently changing its meaning.
+3. Plot a sign-reversed overlay and automatically evaluate whether the two traces butterfly around the selected arrival.
+4. Calculate per-depth QC metrics:
+   - pre-trigger noise level;
+   - signal-to-noise ratio;
+   - clipping or constant-value detection;
+   - left/right polarity consistency;
+   - sign-reversed waveform correlation;
+   - left/right PT or experimental-pick disagreement; and
+   - sample interval consistency.
+5. Add an analyst quality state: accepted, accepted with comment, rejected, or not reviewed.
+6. Add an uncertainty field or draggable time band for each accepted arrival.
+7. Allow repeated impacts at the same depth to be retained, compared, and stacked rather than overwritten.
+8. Provide keyboard shortcuts, undo/redo, and a clear re-pick history for high-volume review.
+
+**Acceptance criteria:**
+
+- CO is stored as one pairwise crossover time, not the average of two zero crossings.
+- PT respects expected reversed polarity.
+- Experimental picks are visually and textually distinguished.
+- Rejected observations are omitted from inversion with a visible audit entry.
+- All accepted picks have a review state and uncertainty value or documented default.
+- The PDF displays the method definitions, QC result, picks, and exclusions.
+
+**Dependencies:** WP-00.
+
+**Status:** In progress. Steps 1 through 6 are implemented for PT, CO, individual zero crossing, and maximum
+peak in schema 5. First-arrival and cross-correlation methods remain deferred. Repeated-impact retention,
+stacking, keyboard shortcuts, undo/redo, pick history, broader threshold calibration, and independent validation
+remain outstanding.
+
+### WP-02 — Make trigger handling and geometry auditable
+
+**Objective:** Prevent timing and geometry assumptions from becoming hidden sources of velocity error.
+
+**Implementation pathway:**
+
+1. Add a GRU import dialog with a default 50 ms pre-trigger value.
+2. Retain both recorded time and trigger-relative time in the in-memory/project data model.
+3. Store the applied correction per imported record or import batch.
+4. Add optional trigger-channel or trigger-calibration data when future formats provide it.
+5. Capture:
+   - source offset and its measurement uncertainty;
+   - source elevation and ground datum;
+   - receiver depth reference;
+   - source-block orientation and strike directions;
+   - receiver orientation;
+   - cone inclination/deviation with depth; and
+   - whether depth is measured along rods or corrected vertically.
+6. Correct receiver coordinates when inclination data are supplied.
+7. Add an applicability warning when source/receiver geometry is incomplete or inconsistent.
+
+**Acceptance criteria:**
+
+- The analyst can reconstruct raw recorded time from saved project data.
+- Every report states the applied pre-trigger correction and time reference.
+- The ray model uses corrected geometry where supplied.
+- Changing the pre-trigger or geometry invalidates existing inversion results and requires a rerun.
+
+**Dependencies:** WP-00. Coordinate with WP-01 project-schema changes.
+
+**Status:** Substantially complete. Steps 1 through 3 and 5 through 7 are implemented in schema 7. Step 4 is
+reserved for a future raw format that provides a trigger channel or calibration record and is not a blocker for
+the current GRU workflow.
+
+### WP-03 — Implement standards-facing Vs30 methods
+
+**Objective:** Provide a transparent TS 1170.5:2025 Method 1 calculation without removing exploratory sensitivity tools.
+
+**Implementation pathway:**
+
+1. Create an explicit `Vs30Method` calculation interface rather than embedding all extrapolation logic in one function.
+2. Implement TS 1170.5:2025 Method 1:
+   - use direct measured Vs over the required profile depth;
+   - extend the last measured layer to 30 m when the Method 1 depth requirement is met;
+   - apply the specified shallow 0-to-3 m treatment for SCPT/downhole profiles;
+   - calculate central, lower-bound, and upper-bound Vs30 using the applicable 5% uncertainty treatment; and
+   - record measured, adjusted, and extrapolated thicknesses.
+3. Show the raw RayPath profile and standards-adjusted Vs30 calculation together.
+4. Move the existing weighting control into an "Experimental sensitivity" section with a persistent warning.
+5. Exclude experimental weighting from the primary standards result and standard summary table by default.
+6. Add Method 2 as a later sub-feature for profiles with at least 15 m of measured Vs, using an approved Vsz-to-Vs30 relationship, CPT/SPT-derived lower profile, or authoritative geological model with the required uncertainty treatment.
+7. Do not implement Method 3 until its data inputs, correlations, provenance, and uncertainty rules can be represented correctly.
+
+**Acceptance criteria:**
+
+- Worked examples from the published TS methodology reproduce within rounding tolerance.
+- The report identifies method, measured depth, shallow adjustment, extrapolated interval, uncertainty factor, and result bounds.
+- If uncertainty spans more than one TS site class, the result is visibly flagged.
+- Experimental weighting cannot be mistaken for the Method 1 result.
+- Full-depth profiles are clipped exactly at 30 m.
+
+**Dependencies:** WP-00. Benefits from WP-02 geometry and trigger metadata.
+
+**Status:** WP-03A (Method 1) complete in schema 8. Method 2 is deferred to a later sub-feature and Method 3 remains
+intentionally out of scope. Numerical Vs30 bands are screening information only; final TS site classification remains
+dependent on the standard's additional soil, rock, and geotechnical criteria.
+
+### WP-04 — Improve inversion regularisation and uncertainty
+
+**Objective:** Make the smooth model less dependent on sampling geometry and quantify the confidence justified by the observations.
+
+**Implementation pathway:**
+
+1. Replace unscaled second differences with a depth-aware derivative or finite-difference operator based on layer-centre spacing.
+2. Normalise the regularisation term so its behaviour remains comparable across different receiver intervals and numbers of layers.
+3. Accept an observation standard deviation for every arrival and minimise weighted residuals.
+4. Convert QC metrics into transparent default uncertainty suggestions, while allowing analyst override.
+5. Add a robust loss option and identify influential or outlying observations without silently deleting them.
+6. Add regularisation selection support using an L-curve, cross-validation, or another documented objective method. Preserve manual override.
+7. Generate uncertainty ensembles by perturbing arrivals within their pick uncertainties and rerunning the inversion.
+8. Plot velocity confidence envelopes and propagate each ensemble to Vs30.
+9. Add sensitivity or resolution indicators for each layer/node.
+10. Detect parameters at velocity bounds and report them as possible model inadequacy rather than ordinary convergence.
+
+**Acceptance criteria:**
+
+- Changing from uniform to irregular depth spacing does not materially change an equivalent synthetic solution solely because of the regularisation formulation.
+- Low-quality or uncertain picks exert less influence in a documented manner.
+- Every model reports both data RMSE and regularisation contribution.
+- Uncertainty bands are repeatable when a random seed is stored.
+- Bound-active, poorly resolved, or outlier-sensitive intervals are visibly flagged.
+
+**Dependencies:** WP-01 for pick uncertainties and QC. WP-00 for numerical regression coverage.
+
+**Status:** Complete in schema 9. The implemented ensemble quantifies pick-time uncertainty; broader structural and
+interpretive uncertainty remains explicit work for WP-05 and validation work for WP-08. The receiver-interval
+regularised model and L-curve controls are retained here as development history but were superseded in the
+production workflow by the reduced-parameter layered model in schema 11. Observation weighting, robust residual
+handling, diagnostics, and fixed-geometry pick-time ensembles remain applicable to that layered model.
+
+### WP-05 — Add comparator interpretations and geological constraints
+
+**Objective:** Validate RayPath results against recognised alternative processing and prevent over-parameterised profiles.
+
+**Implementation pathway:**
+
+1. Implement corrected vertical travel-time conversion.
+2. Add a depth-versus-corrected-time plot and interactive linear-segment fitting.
+3. Calculate slope-method layer velocities.
+4. Let the analyst define or import layer boundaries from CPT, borelogs, or an interpreted ground model.
+5. Add a piecewise-constant geological-layer RayPath inversion with fewer velocity parameters than observations.
+6. Compare:
+   - pseudo-interval velocity;
+   - slope-method velocity;
+   - staggered observed interval sensitivity; and
+   - interpreted geological-layer RayPath velocity.
+7. Add cross-correlation between successive depths as an independent interval-time interpretation.
+8. Present differences as epistemic/model uncertainty, not as a competition in which the smoothest profile automatically wins.
+
+**Acceptance criteria:**
+
+- The slope method reproduces documented hand calculations and a reference dataset.
+- User-defined boundaries are stored with source/provenance and appear in plots and reports.
+- The application prevents an underdetermined geological-layer inversion.
+- Vs30 and site-period comparisons can be produced for every valid interpretation method.
+
+**Dependencies:** WP-01 and WP-04.
+
+**Status:** In progress. WP-05A implements the corrected geometric adjacent/staggered 1 m observed interval
+comparison as a sensitivity interpretation in schema 10. WP-05B implements analyst-defined boundaries and the
+reduced-parameter, piecewise-constant layered RayPath inversion in schema 11. The slope method, interactive
+corrected-time segment fitting, CPT/borelog boundary import, and cross-correlation interpretation remain
+outstanding. The staggered series do not replace the planned slope method because their overlapping windows are
+correlated and retain less vertical resolution than the original receiver spacing.
+
+### WP-06 — Add New Zealand standards context and site-period analysis
+
+**Objective:** Make the output relevant to both the current Building Code-referenced framework and the emerging TS framework without over-automating site classification.
+
+**Implementation pathway:**
+
+1. Add a project calculation context:
+   - NZBC referenced — NZS 1170.5:2004; or
+   - Alternative Solution/voluntary — TS 1170.5:2025.
+2. Record the selected document edition and method in every exported result.
+3. Add quarter-wavelength site-period calculation, `T0 = 4 * sum(h_i / Vs_i)`, where the profile extends to a defensible controlling rock or impedance boundary.
+4. Allow the controlling boundary and its evidence to be entered explicitly.
+5. Support comparison with an entered HVSR site period.
+6. For NZS 1170.5:2004, provide calculated metrics and decision support but do not assign A-to-E class from Vs30 alone.
+7. For TS 1170.5:2025, evaluate the Vs30 range and required additional soil criteria before suggesting applicable class or classes.
+8. Require analyst confirmation and record the basis for any reported site class.
+
+**Acceptance criteria:**
+
+- A site class cannot be produced from an incomplete set of required inputs.
+- The selected standard and edition are visible in the UI and PDF.
+- Site period is not presented as the full-profile fundamental period when the controlling boundary is unknown.
+- Uncertainty that spans class boundaries produces a multi-class warning/envelope rather than a single unsupported class.
+
+**Dependencies:** WP-03, WP-04, and preferably WP-05.
+
+### WP-07 — Complete metadata, provenance, and engineering reporting
+
+**Objective:** Make an issued result independently reviewable and reproducible.
+
+**Implementation pathway:**
+
+1. Add structured project metadata for client, project, site, test ID, coordinates, date, operator, analyst, reviewer, equipment, calibration, and investigation method.
+2. Store a cryptographic hash and original path/name for each imported source file.
+3. Record application version, project schema version, calculation settings, random seed, and timestamps.
+4. Add a non-destructive calculation history containing each inversion run and the settings that produced it.
+5. Add report sections for:
+   - scope and purpose;
+   - source data and geometry;
+   - equipment and acquisition metadata;
+   - trigger correction;
+   - picking definitions;
+   - waveform QC and exclusions;
+   - velocity analysis methods;
+   - uncertainty and sensitivity;
+   - Vs30 method and adjustments;
+   - standards context;
+   - model assumptions and limitations; and
+   - analyst/reviewer sign-off.
+6. Export a machine-readable calculation manifest alongside the PDF when requested.
+7. Add project schema migrations so older `.rpscpt` files remain readable.
+
+**Acceptance criteria:**
+
+- A reviewer can identify every source record, pick, exclusion, calculation setting, and result from the PDF/project package.
+- Re-running an unchanged saved calculation produces the same result within documented numerical tolerance.
+- Editing source-dependent settings marks prior results as superseded rather than silently updating them.
+- Older supported project schemas migrate with a logged migration record.
+
+**Dependencies:** Schema changes from WP-01 to WP-06 should be substantially stable.
+
+### WP-08 — Validation and independent technical review
+
+**Objective:** Demonstrate that the application is fit for its stated purpose before production distribution.
+
+**Implementation pathway:**
+
+1. Build a validation matrix covering:
+   - homogeneous and smoothly varying profiles;
+   - sharp stiffness contrasts;
+   - genuine velocity reversals;
+   - irregular receiver spacing;
+   - near-surface refraction;
+   - offsets from zero through the expected field range;
+   - trigger shifts and noisy records;
+   - missing/rejected depths;
+   - low-amplitude soft soils;
+   - bound-active solutions; and
+   - profiles terminating above, at, and below 30 m.
+2. Compare forward calculations with independent hand calculations or a separately implemented reference solver.
+3. Compare interpreted profiles with an established independent downhole processing workflow where available.
+4. Run inter-analyst picking trials to estimate repeatability.
+5. Have an experienced New Zealand SCPT practitioner and appropriately qualified geotechnical engineer review:
+   - picking definitions;
+   - model assumptions;
+   - test cases;
+   - Vs30 and site-class workflows;
+   - uncertainty presentation; and
+   - report wording.
+6. Log review findings and close material actions before release.
+
+**Acceptance criteria:**
+
+- A signed validation report identifies test cases, expected results, tolerances, outcomes, limitations, and unresolved risks.
+- No release-critical review actions remain open.
+- The software's stated scope matches what has actually been validated.
+- Known model-inapplicability cases produce warnings or are rejected.
+
+**Dependencies:** WP-01 through WP-07.
+
+### WP-09 — Refactor and package the portable application
+
+**Objective:** Produce a maintainable, reproducible Windows application only after the technical workflow is stable.
+
+**Implementation pathway:**
+
+1. Refactor the single file into a package such as:
+
+   ```text
+   raypath_scpt/
+     __init__.py
+     app.py
+     core/
+       rays.py
+       inversion.py
+       uncertainty.py
+       vs30.py
+       site_period.py
+     data/
+       gru.py
+       projects.py
+       migrations.py
+     picking/
+       methods.py
+       quality.py
+     reporting/
+       pdf_report.py
+     ui/
+       main_window.py
+       picker.py
+     resources/
+   tests/
+   ```
+
+2. Add a `pyproject.toml`, locked dependency/build environment, automated formatting, static checks, and test commands.
+3. Remove numerical dependencies on Qt so the engineering backend remains independently testable.
+4. Package with a Windows-compatible tool such as PyInstaller or Nuitka.
+5. Bundle Qt plugins, Matplotlib resources, ReportLab assets, and RayPath branding explicitly.
+6. Create both:
+   - a portable zipped application folder; and
+   - an installer with Start Menu shortcuts and uninstall support.
+7. Add code signing when the release process and certificate are available.
+8. Test on clean, supported Windows systems without Python or Anaconda installed.
+9. Verify opening/saving projects, GRU imports, all plots, background inversion, CSV/PDF export, high-DPI scaling, and paths containing spaces or non-ASCII characters.
+10. Publish checksums, release notes, known limitations, and the validation document with each controlled release.
+
+**Acceptance criteria:**
+
+- The packaged application passes the full automated suite and clean-machine acceptance test.
+- It does not depend on an installed Python, Spyder, PyQt5, or Anaconda environment.
+- A packaged calculation matches the development-environment calculation within documented tolerance.
+- Application version, project schema, build identifier, and validation status are visible.
+- Upgrade and rollback procedures are documented and tested.
+
+**Dependencies:** WP-00 through WP-08. Packaging work may be prototyped earlier, but no production release should be issued early.
+
+## 7. Recommended immediate development sequence
+
+The next implementation cycle should follow this sequence:
+
+1. **WP-00 baseline tests and versioning — substantially complete.** Visual references and CI integration remain.
+2. **WP-01 pick terminology migration — complete.** The schema-4 picker distinguishes pair crossover from
+   the experimental individual zero crossing.
+3. **WP-01 QC minimum — complete.** Polarity, correlation/lag, SNR, signal-integrity warnings, analyst state,
+   comments, uncertainty, exclusions, and report schedules are implemented in schema 5.
+4. **WP-02 pre-trigger auditability — complete.** The correction is confirmed at import and both recorded and
+   trigger-relative clocks are retained in schema 6.
+5. **WP-02 geometry auditability — complete.** Schema 7 captures survey metadata and the inversion uses corrected
+   vertical depths and receiver-specific offsets.
+6. **WP-03 TS Method 1 — complete.** Schema 8 implements last-layer extension, shallow adjustment, and 5% bounds.
+7. **WP-04 uncertainty and diagnostics — substantially retained.** Schema 9 introduced weighted/robust inversion,
+   diagnostics, and repeatable velocity/Vs30 ensembles. Its receiver-interval smoothing and L-curve workflow was
+   superseded by the schema-11 layered model.
+8. **WP-05 comparator interpretations — in progress.** The corrected geometric adjacent/staggered 1 m
+   sensitivity comparison is complete in WP-05A and the analyst-defined layered RayPath model is complete in
+   WP-05B. Add the corrected-time slope plot and interactive segment fitting next, followed by CPT/borelog overlays.
+
+WP-05C is now the next engineering-development package. Packaging remains deferred until the calculation and
+validation workflow is substantially stable.
+
+## 8. Release gates
+
+### Internal technical evaluation gate
+
+- WP-00 complete.
+- Pick definitions no longer misleading.
+- Pre-trigger correction visible and saved.
+- Experimental Vs30 weighting clearly labelled.
+
+### Engineering beta gate
+
+- WP-01 through WP-05 substantially complete.
+- Automated numerical and project-migration tests passing.
+- Vs30 worked examples verified.
+- Uncertainty and exclusions visible in UI and report.
+
+### Production release-candidate gate
+
+- WP-06 and WP-07 complete.
+- No generic standards-compliance claims.
+- Complete reproducibility manifest and limitations statement.
+- Validation matrix executed.
+
+### Portable production release gate
+
+- WP-08 review accepted.
+- WP-09 clean-machine tests passing.
+- Versioned installer/portable archive, checksums, release notes, and rollback package available.
+
+## 9. Deferred and out-of-scope items
+
+The following should not displace the release-critical work:
+
+- Full two- or three-dimensional seismic tomography.
+- Automatic interpretation of dipping or laterally variable stratigraphy.
+- Automatic liquefaction assessment based only on Vs.
+- Automatic site classification without the required geological and geotechnical inputs.
+- Cloud storage, multi-user collaboration, or online licensing.
+- Additional vendor formats before the GRU workflow and project schema are stable.
+
+Potential later enhancements include CPT/CPTu import, region-appropriate Vs correlation overlays, HVSR data import, AGS-compatible exchange, batch project processing, and controlled company report templates.
+
+## 10. Definition of project success
+
+RayPath SCPT will be ready for controlled production deployment when it can take traceable source waveforms through reviewed arrival picks to a reproducible velocity profile and standards-contextualised Vs30 result, while quantifying uncertainty, exposing assumptions, preserving alternative interpretations, and producing sufficient evidence for independent engineering review.
+
+The success criterion is not simply that the software produces a smooth profile. It is that the profile is technically explainable, independently checkable, appropriately qualified, and no more precise than the field data and model assumptions justify.
