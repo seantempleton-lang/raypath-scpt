@@ -8,3 +8,9 @@ __pycache__/
 *.[Pp][Dd][Ff]
 *.[Cc][Mm][Dd]
 *.[Vv][Bb][Ss]
+
+# Approved verification assets are part of the reproducible test baseline.
+!scripts/verify.cmd
+!tests/fixtures/
+!tests/fixtures/minimal.GRU
+!tests/fixtures/reviewed_minimal_v3.rpscpt
