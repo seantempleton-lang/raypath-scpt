@@ -8,6 +8,7 @@ import copy
 import csv
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -86,6 +87,71 @@ class ProjectStateTests(unittest.TestCase):
             loaded._set_dirty(False)
             source.close()
             loaded.close()
+
+    def test_pdf_report_method_delegates_to_reporting_module(self) -> None:
+        window = RayPathMainWindow()
+        try:
+            target = Path("delegated-report.pdf")
+            with patch("raypath_scpt.build_pdf_report") as builder:
+                window._build_pdf_report(target)
+            builder.assert_called_once_with(window, target)
+        finally:
+            window._set_dirty(False)
+            window.close()
+
+    def test_extracted_pdf_report_builder_writes_a_report(self) -> None:
+        window = RayPathMainWindow()
+        try:
+            depths = np.asarray([3.5, 10.0, 20.0, 25.0])
+            velocities = np.asarray([160.0, 210.0, 280.0, 360.0])
+            observed, rays = forward_model(np.diff(np.r_[0.0, depths]), velocities, 2.4)
+            count = depths.size
+            result = InversionResult(
+                depths_m=depths,
+                thicknesses_m=np.diff(np.r_[0.0, depths]),
+                velocities_mps=velocities,
+                observed_times_s=observed,
+                calculated_times_s=observed.copy(),
+                residuals_s=np.zeros(count),
+                ray_parameters=np.asarray([ray.ray_parameter for ray in rays]),
+                ray_x_segments=[ray.horizontal_segments_m.copy() for ray in rays],
+                receiver_offsets_m=np.full(count, 2.4),
+                rmse_s=0.0,
+                success=True,
+                message="Synthetic report regression",
+                iterations=1,
+                weighted_rmse_s=0.0,
+                data_cost_ms2=0.0,
+                regularization_cost=0.0,
+                roughness_norm=0.0,
+                objective_value=0.0,
+                observation_std_s=np.full(count, 0.0002),
+                standardized_residuals=np.zeros(count),
+                resolution_diagonal=np.ones(count),
+                observation_leverage=np.zeros(count),
+                influence_scores=np.zeros(count),
+                outlier_flags=np.zeros(count, dtype=bool),
+                influential_flags=np.zeros(count, dtype=bool),
+                bound_active_flags=np.zeros(count, dtype=bool),
+            )
+            window._set_all_pick_rows(
+                [
+                    (depth, {kind: time * 1000.0 for kind in ("first_peak", "crossover", "zero_cross", "max_peak")})
+                    for depth, time in zip(depths, observed)
+                ]
+            )
+            window.comparison_results = {"crossover": result}
+            window.result = result
+            window._update_all_vs30_results(record_history=False)
+
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "report.pdf"
+                window._build_pdf_report(target)
+                self.assertTrue(target.is_file())
+                self.assertGreater(target.stat().st_size, 1000)
+        finally:
+            window._set_dirty(False)
+            window.close()
 
     def test_picker_exposes_the_seven_step_workflow(self) -> None:
         records = parse_gru(FIXTURES / "minimal.GRU")

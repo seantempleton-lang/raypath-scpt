@@ -8,7 +8,7 @@ if errorlevel 1 goto failure
 python raypath_scpt.py --self-test
 if errorlevel 1 goto failure
 
-python -m py_compile raypath_scpt.py tests\test_core.py tests\test_project_state.py
+python -m compileall -q raypath_core raypath_reporting.py raypath_scpt.py tests
 if errorlevel 1 goto failure
 
 popd

@@ -1,7 +1,7 @@
 # RayPath SCPT — Project State and Development Roadmap
 
 **Document status:** Living project specification  
-**Snapshot date:** 5 August 2026  
+**Snapshot date:** 10 August 2026
 **Application status:** Development alpha; suitable for internal development and evaluation, but not yet approved for unreviewed engineering use  
 **Primary platform:** Windows desktop, Python 3.12, PySide6  
 **Units:** SI only — metres (m), milliseconds (ms), and metres per second (m/s)
@@ -106,9 +106,20 @@ Completed on 5 August 2026 (WP-04 — depth-aware regularisation and quantified 
   and PDF outputs; and
 - added numerical, ensemble-repeatability, project-migration, worker, and report regression coverage.
 
-The next active item is WP-05: add comparator interpretations and geological constraints. WP-03 Method 2 remains
-a later extension for partially measured profiles; Method 3 remains deferred until its supporting inputs and
-provenance can be represented correctly.
+Completed on 10 August 2026 (verified baseline and architectural seams):
+
+- restored the synthetic GRU and reviewed-project regression fixtures and both Windows verification commands;
+- established a green 66-test baseline with numerical self-test, compilation, and PDF-generation checks;
+- extracted Qt-free geometry, ray, Vs30, inversion, uncertainty, GRU, picking, QC, project-document, and comparator
+  calculations into the `raypath_core` package while retaining the existing application import surface;
+- moved PDF assembly into `raypath_reporting.py`, called by the desktop application; and
+- added a process-isolated regression check that importing the engineering core does not load Qt or Matplotlib.
+
+WP-05 is now in progress. Its headless calculation foundation includes corrected vertical travel time, segmented
+slope fitting, reduced-parameter geological-layer forward modelling and inversion, and trace cross-correlation.
+Interactive boundary editing, project persistence, plots, comparisons, Vs30 propagation, and reporting of those
+new interpretations remain the next development work. WP-03 Method 2 remains a later extension for partially
+measured profiles; Method 3 remains deferred until its supporting inputs and provenance can be represented correctly.
 
 ## 1. Purpose
 
@@ -141,7 +152,9 @@ At this snapshot date, NZS 1170.5:2004 remains referenced by the New Zealand Bui
 
 ### 3.1 Architecture and dependencies
 
-The application is implemented as a single Python file, `raypath_scpt.py`, with the following dependencies recorded in `requirements.txt`:
+The application retains `raypath_scpt.py` as its desktop entry point and compatibility facade. Headless engineering
+logic is separated into the `raypath_core` package, and PDF assembly is provided by `raypath_reporting.py`. The
+following dependencies are recorded in `requirements.txt`:
 
 - PySide6 6.8 or later;
 - NumPy 2.1 or later;
@@ -149,7 +162,10 @@ The application is implemented as a single Python file, `raypath_scpt.py`, with 
 - Matplotlib 3.9 or later; and
 - ReportLab 4.2 or later.
 
-The current single-file architecture was useful during rapid prototyping. It now makes isolated testing, controlled changes, versioned data migration, and packaging more difficult. Refactoring is recommended after the technical calculation interfaces have been stabilised.
+The first architectural extraction is complete: numerical and project-document modules can be imported without Qt
+or Matplotlib, while existing launchers and imports remain compatible. The main window still owns substantial UI
+state, project-to-widget migration, CSV export, plotting, and orchestration. Those responsibilities should continue
+to move behind data-oriented interfaces incrementally rather than through a single high-risk rewrite.
 
 ### 3.2 Data import and project state
 
@@ -538,6 +554,11 @@ interpretive uncertainty remains explicit work for WP-05 and validation work for
 
 **Dependencies:** WP-01 and WP-04.
 
+**Status:** In progress. Headless implementations now cover steps 1, 3, 5, and the calculation primitive for step 7.
+The geological inversion enforces fewer velocity parameters than arrival observations. Steps 2, 4, 6, and 8 remain
+to be integrated into the desktop workflow, project schema, visualisations, Vs30 comparisons, and reports. The
+cross-correlation primitive still requires the successive-depth pairing and analyst-review workflow.
+
 ### WP-06 — Add New Zealand standards context and site-period analysis
 
 **Objective:** Make the output relevant to both the current Building Code-referenced framework and the emerging TS framework without over-automating site classification.
@@ -644,7 +665,8 @@ interpretive uncertainty remains explicit work for WP-05 and validation work for
 
 **Implementation pathway:**
 
-1. Refactor the single file into a package such as:
+1. Continue the staged refactor, building on the existing `raypath_core` package and extracted report builder, toward
+   a package structure such as:
 
    ```text
    raypath_scpt/
@@ -710,11 +732,14 @@ The next implementation cycle should follow this sequence:
 6. **WP-03 TS Method 1 — complete.** Schema 8 implements last-layer extension, shallow adjustment, and 5% bounds.
 7. **WP-04 regularisation and uncertainty — complete.** Schema 9 adds depth-aware smoothing, weighted/robust
    inversion, L-curve selection, diagnostics, and repeatable velocity/Vs30 ensembles.
-8. **WP-05 comparator interpretations — next.** Add corrected-time and slope-method interpretations, then
-   user-defined/geological-layer constraints.
+8. **Headless architectural extraction — complete.** Engineering calculations, waveform processing, project JSON
+   I/O, and comparator primitives are separated from Qt; PDF assembly is separated from the main window.
+9. **WP-05 comparator interpretations — in progress.** Integrate the implemented corrected-time, slope-method,
+   geological-layer, and cross-correlation calculations with interactive boundaries, persistence, plots, Vs30,
+   and reporting.
 
-WP-05 is now the next engineering-development package. Packaging remains deferred until the calculation and
-validation workflow is substantially stable.
+WP-05 integration is now the next engineering-development package. Packaging remains deferred until the calculation
+and validation workflow is substantially stable.
 
 ## 8. Release gates
 

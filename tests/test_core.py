@@ -15,6 +15,7 @@ from raypath_core import (
     DeviationPoint,
     GRU_PRE_TRIGGER_MS,
     GruFormatError,
+    PROJECT_SCHEMA_VERSION,
     SurveyGeometry,
     WaveformRecord,
     add_suggested_picks,
@@ -22,12 +23,18 @@ from raypath_core import (
     calculate_ts1170_5_method1_vs30,
     calculate_vs30,
     calculate_waveform_qc,
+    corrected_vertical_travel_times,
+    cross_correlation_interval_time,
     depth_aware_regularization_operator,
+    fit_slope_method,
     forward_model,
+    forward_geological_model,
     generate_velocity_uncertainty_ensemble,
     gru_deviation_points,
+    invert_geological_layer_profile,
     invert_velocity_profile,
     parse_gru,
+    project_schema_version,
     pseudo_interval_velocities,
     solve_direct_ray,
     select_regularization_lcurve,
@@ -35,6 +42,8 @@ from raypath_core import (
     suggest_pair_crossover,
     ts1170_5_vs30_band,
     uncertainty_ensemble_classification,
+    read_project_file,
+    write_project_file,
 )
 
 
@@ -59,6 +68,84 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+
+
+class ComparatorInterpretationTests(unittest.TestCase):
+    def test_vertical_time_correction_recovers_homogeneous_vertical_time(self) -> None:
+        depths = np.asarray([2.0, 4.0, 6.0, 8.0])
+        offsets = np.asarray([2.4, 2.4, 2.5, 2.6])
+        velocity = 250.0
+        measured = np.hypot(depths, offsets) / velocity
+
+        corrected = corrected_vertical_travel_times(depths, measured, offsets)
+
+        np.testing.assert_allclose(corrected, depths / velocity, rtol=0.0, atol=1.0e-12)
+
+    def test_slope_method_recovers_two_documented_segments(self) -> None:
+        depths = np.arange(1.0, 9.0)
+        corrected = np.where(depths <= 4.0, depths / 200.0, 4.0 / 200.0 + (depths - 4.0) / 400.0)
+        offset = 2.4
+        measured = corrected * np.hypot(depths, offset) / depths
+
+        result = fit_slope_method(depths, measured, offset, layer_boundaries_m=[4.0])
+
+        self.assertEqual(len(result.layers), 2)
+        self.assertAlmostEqual(result.layers[0].velocity_mps, 200.0, places=8)
+        self.assertAlmostEqual(result.layers[1].velocity_mps, 400.0, places=8)
+        np.testing.assert_allclose(result.calculated_times_s, corrected, rtol=0.0, atol=1.0e-12)
+
+    def test_geological_layer_inversion_recovers_reduced_parameter_model(self) -> None:
+        depths = np.asarray([2.0, 4.0, 6.0, 8.0, 10.0])
+        expected_velocities = np.asarray([200.0, 400.0])
+        observed, _ = forward_geological_model(depths, expected_velocities, [5.0], 0.0)
+
+        result = invert_geological_layer_profile(depths, observed, 0.0, [5.0])
+
+        self.assertTrue(result.success, result.message)
+        self.assertEqual(result.velocities_mps.size, 2)
+        np.testing.assert_allclose(result.velocities_mps, expected_velocities, rtol=2.0e-6, atol=1.0e-6)
+        self.assertLess(result.rmse_s, 1.0e-9)
+
+    def test_geological_inversion_rejects_as_many_parameters_as_observations(self) -> None:
+        with self.assertRaisesRegex(ValueError, "fewer velocity parameters"):
+            invert_geological_layer_profile([2.0, 4.0], [0.01, 0.02], 0.0, [3.0])
+
+    def test_cross_correlation_returns_positive_deeper_trace_delay(self) -> None:
+        shallow = np.asarray([0.0, 0.0, 1.0, 2.0, 1.0, 0.0, 0.0])
+        deeper = np.concatenate((np.zeros(2), shallow[:-2]))
+
+        result = cross_correlation_interval_time(shallow, deeper, sample_interval_ms=0.5)
+
+        self.assertEqual(result.lag_samples, 2)
+        self.assertAlmostEqual(result.lag_ms, 1.0)
+        self.assertGreater(result.correlation, 0.8)
+
+
+class ProjectDocumentTests(unittest.TestCase):
+    def test_current_project_document_round_trips_without_qt(self) -> None:
+        payload = {
+            "format": "RayPath SCPT Project",
+            "version": PROJECT_SCHEMA_VERSION,
+            "schema_version": PROJECT_SCHEMA_VERSION,
+            "application_version": "test",
+            "units": "SI",
+            "inputs": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "headless.rpscpt"
+            write_project_file(path, payload)
+            document = read_project_file(path)
+
+        self.assertEqual(document.schema_version, PROJECT_SCHEMA_VERSION)
+        self.assertEqual(document.payload, payload)
+
+    def test_project_document_rejects_unsupported_schema(self) -> None:
+        payload = {
+            "format": "RayPath SCPT Project",
+            "schema_version": PROJECT_SCHEMA_VERSION + 1,
+        }
+        with self.assertRaisesRegex(ValueError, "not a supported"):
+            project_schema_version(payload)
 
 
 class DirectRayTests(unittest.TestCase):
