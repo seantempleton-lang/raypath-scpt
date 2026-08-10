@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import math
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-from raypath_scpt import (
+from raypath_core import (
     DeviationPoint,
     GRU_PRE_TRIGGER_MS,
     GruFormatError,
@@ -37,6 +39,26 @@ from raypath_scpt import (
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+PROJECT_ROOT = FIXTURES.parent.parent
+
+
+class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_headless_core_import_does_not_load_qt_or_matplotlib(self) -> None:
+        check = (
+            "import sys; import raypath_core; "
+            "blocked = [name for name in sys.modules "
+            "if name == 'PySide6' or name.startswith('PySide6.') "
+            "or name == 'matplotlib' or name.startswith('matplotlib.')]; "
+            "assert not blocked, blocked"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", check],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
 
 
 class DirectRayTests(unittest.TestCase):
