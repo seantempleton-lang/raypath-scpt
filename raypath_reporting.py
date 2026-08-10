@@ -656,6 +656,98 @@ def build_pdf_report(self: Any, target: Path) -> None:
     comparison_table.setStyle(table_style(font_size=7.5))
     story.append(comparison_table)
     story.append(Spacer(1, 3 * mm))
+    if any(
+        value is not None
+        for value in (self.slope_result, self.geological_result, self.cross_correlation_result)
+    ):
+        story.append(Paragraph("Comparator interpretations and geological constraints", styles["SectionHeading"]))
+        boundaries = self._comparator_boundaries()
+        provenance = self.comparator_provenance_edit.text().strip() or "Not recorded"
+        story.append(
+            Paragraph(
+                "Internal geological boundaries: "
+                + (", ".join(f"{value:.3f} m" for value in boundaries) if boundaries else "none — single layer")
+                + f". Source/provenance: {escape(provenance)}. Comparator arrival definition: "
+                + escape(PICK_LABELS.get(self.comparator_pick_kind, self.comparator_pick_kind or "not recorded"))
+                + ".",
+                styles["ReportNote"],
+            )
+        )
+        comparator_rows: list[list[Any]] = [[
+            p("Interpretation", "TableHeader"),
+            p("Layer", "TableHeader"),
+            p("Top (m)", "TableHeader"),
+            p("Bottom (m)", "TableHeader"),
+            p("Vs (m/s)", "TableHeader"),
+            p("RMSE (ms)", "TableHeader"),
+            p("TS M1 Vs30 (m/s)", "TableHeader"),
+        ]]
+
+        def comparator_vs30_text(kind: str) -> str:
+            value = self.comparator_vs30.get(kind)
+            if value is None:
+                return "-"
+            return f"{value.value_mps:.1f} [{value.lower_bound_mps:.1f}-{value.upper_bound_mps:.1f}]"
+
+        if self.slope_result is not None:
+            for index, layer in enumerate(self.slope_result.layers):
+                comparator_rows.append([
+                    p("Corrected-time slope"),
+                    p(index + 1),
+                    p(f"{layer.top_depth_m:.3f}"),
+                    p(f"{layer.bottom_depth_m:.3f}"),
+                    p(f"{layer.velocity_mps:.1f}"),
+                    p(f"{layer.rmse_s * 1000.0:.3f}"),
+                    p(comparator_vs30_text("slope") if index == 0 else ""),
+                ])
+        if self.geological_result is not None:
+            for index, (top, bottom, velocity) in enumerate(zip(
+                self.geological_result.layer_tops_m,
+                self.geological_result.layer_bottoms_m,
+                self.geological_result.velocities_mps,
+            )):
+                comparator_rows.append([
+                    p("Geological RayPath"),
+                    p(index + 1),
+                    p(f"{top:.3f}"),
+                    p(f"{bottom:.3f}"),
+                    p(f"{velocity:.1f}"),
+                    p(f"{self.geological_result.rmse_s * 1000.0:.3f}" if index == 0 else ""),
+                    p(comparator_vs30_text("geological") if index == 0 else ""),
+                ])
+        if self.cross_correlation_result is not None:
+            tops = np.r_[0.0, self.cross_correlation_result.depths_m[:-1]]
+            for index, (top, bottom, velocity) in enumerate(zip(
+                tops,
+                self.cross_correlation_result.depths_m,
+                self.cross_correlation_result.velocities_mps,
+            )):
+                comparator_rows.append([
+                    p("Successive-depth correlation"),
+                    p(index + 1),
+                    p(f"{top:.3f}"),
+                    p(f"{bottom:.3f}"),
+                    p(f"{velocity:.1f}"),
+                    p(f"{self.cross_correlation_result.rmse_s * 1000.0:.3f}" if index == 0 else ""),
+                    p(comparator_vs30_text("cross_correlation") if index == 0 else ""),
+                ])
+        comparator_table = Table(
+            comparator_rows,
+            colWidths=[42 * mm, 13 * mm, 20 * mm, 20 * mm, 22 * mm, 22 * mm, content_width - 139 * mm],
+            repeatRows=1,
+        )
+        comparator_table.setStyle(table_style(font_size=7.3))
+        story.append(comparator_table)
+        story.append(
+            Paragraph(
+                "The corrected-time slope method uses the conventional straight-ray cosine correction and is an "
+                "independent comparator, not a refracted-ray solution. Geological RayPath uses fewer velocity "
+                "parameters than arrival observations. Cross-correlation uses successive-depth waveform lag and "
+                "requires analyst review of correlation quality.",
+                styles["ReportNote"],
+            )
+        )
+        story.append(Spacer(1, 3 * mm))
     selected_ensemble = self.uncertainty_results.get(selected_kind)
     if (
         selected_ensemble is not None

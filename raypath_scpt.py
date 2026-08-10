@@ -1441,6 +1441,13 @@ class RayPathMainWindow(QMainWindow):
         self.vs30_history: dict[tuple[str, float, float], float] = {}
         self.uncertainty_results: dict[str, VelocityUncertaintyResult] = {}
         self.regularization_selection: RegularizationSelectionResult | None = None
+        self.slope_result: SlopeMethodResult | None = None
+        self.geological_result: GeologicalInversionResult | None = None
+        self.cross_correlation_result: InversionResult | None = None
+        self.cross_correlation_intervals: list[dict[str, float]] = []
+        self.comparator_vs30: dict[str, Ts1170Method1Vs30Result | None] = {}
+        self.comparator_reasons: dict[str, str] = {}
+        self.comparator_pick_kind: str | None = None
         self.picker_half_width_ms = DEFAULT_PICKER_HALF_WIDTH_MS
         self._thread: QThread | None = None
         self._worker: InversionWorker | None = None
@@ -1548,6 +1555,7 @@ class RayPathMainWindow(QMainWindow):
             self.fit_canvas,
             self.waterfall_canvas,
             self.vs30_canvas,
+            self.comparator_canvas,
         )
         for canvas in canvases:
             canvas.set_dark_mode(self.dark_mode)
@@ -1754,6 +1762,7 @@ class RayPathMainWindow(QMainWindow):
         self.plot_tabs.addTab(self.fit_canvas, "Arrival-Time Fit")
         self.plot_tabs.addTab(self.waterfall_canvas, "Waveform Waterfall")
         self.plot_tabs.addTab(self._build_vs30_tab(), "Vs30 Analysis")
+        self.plot_tabs.addTab(self._build_comparator_tab(), "Comparator Methods")
         layout.addWidget(self.plot_tabs, 1)
         self._draw_empty_plots()
         return panel
@@ -1822,6 +1831,160 @@ class RayPathMainWindow(QMainWindow):
         self.vs30_canvas = MplCanvas()
         layout.addWidget(self.vs30_canvas, 1)
         return tab
+
+    def _build_comparator_tab(self) -> QWidget:
+        """Create the editable WP-05 comparator interpretation workspace."""
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        note = QLabel(
+            "Boundaries define independent corrected-time slope segments and the reduced-parameter geological "
+            "RayPath model. Each segment requires at least two arrival observations."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("subtleLabel")
+        layout.addWidget(note)
+
+        controls = QHBoxLayout()
+        self.comparator_boundary_table = QTableWidget(0, 1)
+        self.comparator_boundary_table.setHorizontalHeaderLabels(["Corrected vertical boundary depth (m)"])
+        self.comparator_boundary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.comparator_boundary_table.verticalHeader().setVisible(False)
+        self.comparator_boundary_table.setMaximumWidth(250)
+        self.comparator_boundary_table.itemChanged.connect(self._comparator_boundaries_changed)
+        controls.addWidget(self.comparator_boundary_table)
+        button_column = QVBoxLayout()
+        add_boundary = QPushButton("+ Boundary…")
+        add_boundary.clicked.connect(self._add_comparator_boundary)
+        remove_boundary = QPushButton("− Boundary")
+        remove_boundary.clicked.connect(self._remove_comparator_boundaries)
+        self.recalculate_comparators_button = QPushButton("Recalculate Comparators")
+        self.recalculate_comparators_button.clicked.connect(
+            lambda: self._update_comparator_results(show_errors=True)
+        )
+        button_column.addWidget(add_boundary)
+        button_column.addWidget(remove_boundary)
+        button_column.addWidget(self.recalculate_comparators_button)
+        button_column.addStretch()
+        controls.addLayout(button_column)
+        provenance_form = QFormLayout()
+        self.comparator_provenance_edit = QLineEdit()
+        self.comparator_provenance_edit.setPlaceholderText("e.g. CPT log, borelog, interpreted ground model")
+        self.comparator_provenance_edit.textChanged.connect(self._comparator_provenance_changed)
+        provenance_form.addRow("Boundary source / provenance", self.comparator_provenance_edit)
+        controls.addLayout(provenance_form, 1)
+        layout.addLayout(controls)
+
+        self.comparator_status_label = QLabel("Run the main inversion to calculate comparator interpretations.")
+        self.comparator_status_label.setWordWrap(True)
+        self.comparator_status_label.setObjectName("subtleLabel")
+        layout.addWidget(self.comparator_status_label)
+        self.comparator_canvas = MplCanvas()
+        layout.addWidget(self.comparator_canvas, 2)
+        self.comparator_table = QTableWidget(0, 7)
+        self.comparator_table.setHorizontalHeaderLabels(
+            ["Interpretation", "Layer", "Top (m)", "Bottom (m)", "Vs (m/s)", "RMSE (ms)", "TS M1 Vs30"]
+        )
+        self.comparator_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.comparator_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.comparator_table.horizontalHeader().setStretchLastSection(True)
+        self.comparator_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.comparator_table, 1)
+        return tab
+
+    def _comparator_boundaries(self) -> list[float]:
+        values: list[float] = []
+        for row in range(self.comparator_boundary_table.rowCount()):
+            item = self.comparator_boundary_table.item(row, 0)
+            if item is None or not item.text().strip():
+                continue
+            value = float(item.text())
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError("Geological boundaries must be finite and greater than zero.")
+            values.append(value)
+        boundaries = sorted(values)
+        if len(boundaries) != len(set(round(value, 9) for value in boundaries)):
+            raise ValueError("Geological boundaries must be unique.")
+        if boundaries:
+            try:
+                deepest = float(self._geometry_recorded_depths()[-1])
+            except ValueError:
+                deepest = math.inf
+            if boundaries[-1] >= deepest:
+                raise ValueError(
+                    f"Every geological boundary must be shallower than the deepest receiver ({deepest:.3f} m)."
+                )
+        return boundaries
+
+    def _set_comparator_boundaries(self, boundaries_m: Iterable[float]) -> None:
+        values = sorted(float(value) for value in boundaries_m)
+        self.comparator_boundary_table.blockSignals(True)
+        self.comparator_boundary_table.setRowCount(len(values))
+        for row, value in enumerate(values):
+            self.comparator_boundary_table.setItem(row, 0, QTableWidgetItem(f"{value:.3f}"))
+        self.comparator_boundary_table.blockSignals(False)
+
+    @Slot()
+    def _add_comparator_boundary(self) -> None:
+        try:
+            depths = self._geometry_recorded_depths()
+            maximum = float(depths[-1])
+        except ValueError as exc:
+            QMessageBox.information(self, "Receiver depths required", str(exc))
+            return
+        default = maximum / 2.0
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "Add geological boundary",
+            f"Corrected vertical boundary depth between 0 and {maximum:.3f} m:",
+            default,
+            0.001,
+            max(0.001, maximum - 0.001),
+            3,
+        )
+        if not accepted:
+            return
+        try:
+            values = self._comparator_boundaries()
+            values.append(float(value))
+            self._set_comparator_boundaries(values)
+            self._comparator_boundaries_changed()
+        except ValueError as exc:
+            self._show_error("Invalid geological boundary", exc)
+
+    @Slot()
+    def _remove_comparator_boundaries(self) -> None:
+        rows = sorted({index.row() for index in self.comparator_boundary_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.comparator_boundary_table.removeRow(row)
+        if rows:
+            self._comparator_boundaries_changed()
+
+    @Slot()
+    def _comparator_boundaries_changed(self, *_args: Any) -> None:
+        self._clear_comparator_results()
+        self.comparator_status_label.setText(
+            "Comparator settings changed — recalculate or rerun the main inversion."
+        )
+        if self.result is not None:
+            self._draw_results(self.result)
+        self._set_dirty(True)
+
+    @Slot(str)
+    def _comparator_provenance_changed(self, _text: str) -> None:
+        self._set_dirty(True)
+
+    def _clear_comparator_results(self) -> None:
+        self.slope_result = None
+        self.geological_result = None
+        self.cross_correlation_result = None
+        self.cross_correlation_intervals = []
+        self.comparator_vs30.clear()
+        self.comparator_reasons.clear()
+        self.comparator_pick_kind = None
+        self.comparator_table.setRowCount(0)
+        if hasattr(self, "comparator_canvas"):
+            self._draw_comparator_results()
 
     def _build_result_panel(self) -> QWidget:
         panel = QFrame()
@@ -2049,6 +2212,8 @@ class RayPathMainWindow(QMainWindow):
         self.uncertainty_seed_spin.setValue(DEFAULT_UNCERTAINTY_SEED)
         self.estimator_combo.setCurrentIndex(1)
         self.extrapolation_weight_slider.setValue(0)
+        self._set_comparator_boundaries([])
+        self.comparator_provenance_edit.clear()
         self._clear_results()
         self.status_label.setText("Ready — import a GRU file or enter observations")
         self._update_geometry_status()
@@ -2107,6 +2272,7 @@ class RayPathMainWindow(QMainWindow):
         self.vs30_unavailable_reason = None
         self.uncertainty_results.clear()
         self.regularization_selection = None
+        self._clear_comparator_results()
         if clear_vs30_history:
             self.vs30_history.clear()
         self.result_table.setRowCount(0)
@@ -2141,6 +2307,297 @@ class RayPathMainWindow(QMainWindow):
             canvas.draw_idle()
         self._draw_waveform_waterfall()
         self._draw_vs30_analysis()
+        self._draw_comparator_results()
+
+    def _update_comparator_results(self, show_errors: bool = False) -> None:
+        """Calculate all WP-05 comparators for the currently selected pick model."""
+
+        self._clear_comparator_results()
+        selected_kind = str(self.estimator_combo.currentData())
+        selected = self.comparison_results.get(selected_kind)
+        if selected is None:
+            self.comparator_status_label.setText("Run the main inversion to calculate comparator interpretations.")
+            return
+        self.comparator_pick_kind = selected_kind
+        try:
+            boundaries = self._comparator_boundaries()
+        except ValueError as exc:
+            self.comparator_reasons["settings"] = str(exc)
+            self.comparator_status_label.setText(str(exc))
+            if show_errors:
+                self._show_error("Invalid comparator settings", exc)
+            return
+
+        failures: list[str] = []
+        try:
+            self.slope_result = fit_slope_method(
+                selected.depths_m,
+                selected.observed_times_s,
+                selected.receiver_offsets_m,
+                boundaries,
+            )
+        except (ValueError, RuntimeError) as exc:
+            self.comparator_reasons["slope"] = str(exc)
+            failures.append(f"Slope: {exc}")
+
+        try:
+            self.geological_result = invert_geological_layer_profile(
+                selected.depths_m,
+                selected.observed_times_s,
+                selected.receiver_offsets_m,
+                boundaries,
+            )
+        except (ValueError, RayPathError, FloatingPointError) as exc:
+            self.comparator_reasons["geological"] = str(exc)
+            failures.append(f"Geological RayPath: {exc}")
+
+        self._update_cross_correlation_comparator(selected_kind, selected, failures)
+        comparator_profiles: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        if self.slope_result is not None:
+            comparator_profiles["slope"] = (
+                np.asarray([layer.bottom_depth_m for layer in self.slope_result.layers]),
+                np.asarray([layer.velocity_mps for layer in self.slope_result.layers]),
+            )
+        if self.geological_result is not None:
+            comparator_profiles["geological"] = (
+                self.geological_result.layer_bottoms_m,
+                self.geological_result.velocities_mps,
+            )
+        if self.cross_correlation_result is not None:
+            comparator_profiles["cross_correlation"] = (
+                self.cross_correlation_result.depths_m,
+                self.cross_correlation_result.velocities_mps,
+            )
+        for name, (depths, velocities) in comparator_profiles.items():
+            try:
+                self.comparator_vs30[name] = calculate_ts1170_5_method1_vs30(depths, velocities)
+            except ValueError as exc:
+                self.comparator_vs30[name] = None
+                self.comparator_reasons[f"{name}_vs30"] = str(exc)
+
+        available = sum(
+            value is not None
+            for value in (self.slope_result, self.geological_result, self.cross_correlation_result)
+        )
+        boundary_text = ", ".join(f"{value:g}" for value in boundaries) or "none (single layer)"
+        self.comparator_status_label.setText(
+            f"{available}/3 comparator interpretations available for {PICK_LABELS.get(selected_kind, selected_kind)}; "
+            f"boundaries: {boundary_text}."
+            + (" " + " | ".join(failures) if failures else "")
+        )
+        self._populate_comparator_table()
+        self._draw_comparator_results()
+        if self.result is not None:
+            self._draw_results(self.result)
+        if show_errors and failures and available == 0:
+            self._show_error("Comparator calculations unavailable", ValueError("\n".join(failures)))
+
+    def _update_cross_correlation_comparator(
+        self,
+        selected_kind: str,
+        selected: InversionResult,
+        failures: list[str],
+    ) -> None:
+        """Build cumulative arrivals from successive-depth trace correlations."""
+
+        if not self.waveform_records:
+            self.comparator_reasons["cross_correlation"] = "Raw waveform records are not available."
+            return
+        records = sorted(
+            (
+                record
+                for record in self.waveform_records
+                if not record.is_excluded and record.arrival_ms(selected_kind) is not None
+            ),
+            key=lambda record: record.depth_m,
+        )
+        if len(records) != selected.depths_m.size:
+            reason = "The available reviewed waveform sequence does not match the selected inversion observations."
+            self.comparator_reasons["cross_correlation"] = reason
+            failures.append(f"Cross-correlation: {reason}")
+            return
+        arrivals = [float(selected.observed_times_s[0])]
+        intervals: list[dict[str, float]] = []
+        try:
+            for shallow, deeper in zip(records[:-1], records[1:]):
+                shallow_interval = float(np.median(np.diff(shallow.time_ms)))
+                deeper_interval = float(np.median(np.diff(deeper.time_ms)))
+                if not math.isclose(shallow_interval, deeper_interval, rel_tol=1.0e-6, abs_tol=1.0e-9):
+                    raise ValueError("Successive waveform records have inconsistent sample intervals.")
+                left = cross_correlation_interval_time(
+                    shallow.left,
+                    deeper.left,
+                    shallow_interval,
+                    maximum_lag_ms=25.0,
+                )
+                right = cross_correlation_interval_time(
+                    shallow.right,
+                    deeper.right,
+                    shallow_interval,
+                    maximum_lag_ms=25.0,
+                )
+                lag_ms = 0.5 * (left.lag_ms + right.lag_ms)
+                if lag_ms <= 0.0:
+                    raise ValueError(
+                        f"Cross-correlation from {shallow.depth_m:g} to {deeper.depth_m:g} m did not produce "
+                        "a positive interval time."
+                    )
+                arrivals.append(arrivals[-1] + lag_ms / 1000.0)
+                intervals.append(
+                    {
+                        "from_depth_m": float(shallow.depth_m),
+                        "to_depth_m": float(deeper.depth_m),
+                        "left_lag_ms": left.lag_ms,
+                        "right_lag_ms": right.lag_ms,
+                        "mean_lag_ms": lag_ms,
+                        "left_correlation": left.correlation,
+                        "right_correlation": right.correlation,
+                    }
+                )
+            self.cross_correlation_result = invert_velocity_profile(
+                selected.depths_m,
+                arrivals,
+                self.offset_spin.value(),
+                regularization=self.reg_slider.value() / 100.0,
+                receiver_offsets_m=selected.receiver_offsets_m,
+                observation_std_s=selected.observation_std_s,
+                robust_loss=str(self.robust_loss_combo.currentData()),
+            )
+            self.cross_correlation_intervals = intervals
+        except (ValueError, RayPathError, FloatingPointError) as exc:
+            self.cross_correlation_result = None
+            self.cross_correlation_intervals = []
+            self.comparator_reasons["cross_correlation"] = str(exc)
+            failures.append(f"Cross-correlation: {exc}")
+
+    def _populate_comparator_table(self) -> None:
+        rows: list[tuple[str, str, str, str, str, str, str]] = []
+
+        def vs30_text(kind: str) -> str:
+            value = self.comparator_vs30.get(kind)
+            return "—" if value is None else f"{value.value_mps:.1f} m/s"
+
+        if self.slope_result is not None:
+            for index, layer in enumerate(self.slope_result.layers):
+                rows.append(
+                    (
+                        "Corrected-time slope",
+                        str(index + 1),
+                        f"{layer.top_depth_m:.3f}",
+                        f"{layer.bottom_depth_m:.3f}",
+                        f"{layer.velocity_mps:.1f}",
+                        f"{layer.rmse_s * 1000.0:.3f}",
+                        vs30_text("slope") if index == 0 else "",
+                    )
+                )
+        if self.geological_result is not None:
+            for index, (top, bottom, velocity) in enumerate(
+                zip(
+                    self.geological_result.layer_tops_m,
+                    self.geological_result.layer_bottoms_m,
+                    self.geological_result.velocities_mps,
+                )
+            ):
+                rows.append(
+                    (
+                        "Geological RayPath",
+                        str(index + 1),
+                        f"{top:.3f}",
+                        f"{bottom:.3f}",
+                        f"{velocity:.1f}",
+                        f"{self.geological_result.rmse_s * 1000.0:.3f}" if index == 0 else "",
+                        vs30_text("geological") if index == 0 else "",
+                    )
+                )
+        if self.cross_correlation_result is not None:
+            tops = np.r_[0.0, self.cross_correlation_result.depths_m[:-1]]
+            for index, (top, bottom, velocity) in enumerate(
+                zip(tops, self.cross_correlation_result.depths_m, self.cross_correlation_result.velocities_mps)
+            ):
+                rows.append(
+                    (
+                        "Successive-depth correlation",
+                        str(index + 1),
+                        f"{top:.3f}",
+                        f"{bottom:.3f}",
+                        f"{velocity:.1f}",
+                        f"{self.cross_correlation_result.rmse_s * 1000.0:.3f}" if index == 0 else "",
+                        vs30_text("cross_correlation") if index == 0 else "",
+                    )
+                )
+        self.comparator_table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for column, value in enumerate(values):
+                self.comparator_table.setItem(row, column, QTableWidgetItem(value))
+
+    def _draw_comparator_results(self) -> None:
+        if not hasattr(self, "comparator_canvas"):
+            return
+        self.comparator_canvas.clear()
+        ax = self.comparator_canvas.axes
+        ax.set_title("Corrected vertical travel-time comparators")
+        ax.set_xlabel("Corrected vertical travel time (ms)")
+        ax.set_ylabel("Corrected vertical depth (m)")
+        if self.slope_result is None and self.geological_result is None:
+            ax.text(
+                0.5,
+                0.5,
+                "Run inversion and calculate comparators",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                color=self.comparator_canvas.muted_color,
+            )
+            self.comparator_canvas.draw_idle()
+            return
+        if self.slope_result is not None:
+            ax.scatter(
+                self.slope_result.corrected_times_s * 1000.0,
+                self.slope_result.depths_m,
+                facecolors="none",
+                edgecolors="#2fb7a8",
+                label="Corrected observations",
+            )
+            for index, layer in enumerate(self.slope_result.layers):
+                indices = layer.observation_indices
+                ax.plot(
+                    self.slope_result.calculated_times_s[indices] * 1000.0,
+                    self.slope_result.depths_m[indices],
+                    "-o",
+                    color="#2fb7a8",
+                    linewidth=2.0,
+                    markersize=3,
+                    label="Slope segments" if index == 0 else None,
+                )
+        if self.geological_result is not None:
+            corrected_geological = corrected_vertical_travel_times(
+                self.geological_result.receiver_depths_m,
+                self.geological_result.calculated_times_s,
+                self.geological_result.receiver_offsets_m,
+            )
+            ax.plot(
+                corrected_geological * 1000.0,
+                self.geological_result.receiver_depths_m,
+                "--s",
+                color="#c87941",
+                linewidth=1.8,
+                markersize=3,
+                label="Geological RayPath calculated",
+            )
+        try:
+            boundaries = self._comparator_boundaries()
+        except ValueError:
+            boundaries = []
+        for boundary in boundaries:
+            ax.axhline(boundary, color="#d29922", linestyle=":", linewidth=1.2)
+        deepest = (
+            self.slope_result.depths_m[-1]
+            if self.slope_result is not None
+            else self.geological_result.receiver_depths_m[-1]
+        )
+        ax.set_ylim(float(deepest), 0.0)
+        ax.legend(**self.comparator_canvas.legend_kwargs())
+        self.comparator_canvas.draw_idle()
 
     def _draw_waveform_waterfall(self) -> None:
         """Draw every imported left/right trace at its receiver depth."""
@@ -2910,6 +3367,68 @@ class RayPathMainWindow(QMainWindow):
         self.status_label.setText(f"Imported {len(rows)} CSV observations")
         self._set_dirty(True)
 
+    def _comparator_audit_payload(self) -> dict[str, Any]:
+        """Return schema-10 comparator settings and calculated audit data."""
+
+        payload: dict[str, Any] = {
+            "arrival_pick_kind": self.comparator_pick_kind,
+            "geological_boundaries_m": self._comparator_boundaries(),
+            "boundary_provenance": self.comparator_provenance_edit.text().strip(),
+            "unavailable_reasons": dict(self.comparator_reasons),
+        }
+        if self.slope_result is not None:
+            payload["slope_method"] = {
+                "method": "straight-ray cosine-corrected vertical time; independent linear segments",
+                "corrected_times_ms": (self.slope_result.corrected_times_s * 1000.0).tolist(),
+                "calculated_times_ms": (self.slope_result.calculated_times_s * 1000.0).tolist(),
+                "rmse_ms": float(np.sqrt(np.mean(self.slope_result.residuals_s ** 2)) * 1000.0),
+                "layers": [
+                    {
+                        "top_depth_m": layer.top_depth_m,
+                        "bottom_depth_m": layer.bottom_depth_m,
+                        "velocity_mps": layer.velocity_mps,
+                        "slope_s_per_m": layer.slope_s_per_m,
+                        "intercept_s": layer.intercept_s,
+                        "rmse_ms": layer.rmse_s * 1000.0,
+                    }
+                    for layer in self.slope_result.layers
+                ],
+            }
+        if self.geological_result is not None:
+            payload["geological_raypath"] = {
+                "layer_tops_m": self.geological_result.layer_tops_m.tolist(),
+                "layer_bottoms_m": self.geological_result.layer_bottoms_m.tolist(),
+                "velocities_mps": self.geological_result.velocities_mps.tolist(),
+                "calculated_times_ms": (self.geological_result.calculated_times_s * 1000.0).tolist(),
+                "rmse_ms": self.geological_result.rmse_s * 1000.0,
+                "success": self.geological_result.success,
+                "message": self.geological_result.message,
+                "bound_active_flags": self.geological_result.bound_active_flags.tolist(),
+                "warnings": list(self.geological_result.warnings),
+            }
+        if self.cross_correlation_result is not None:
+            payload["successive_depth_cross_correlation"] = {
+                "intervals": list(self.cross_correlation_intervals),
+                "arrival_times_ms": (self.cross_correlation_result.observed_times_s * 1000.0).tolist(),
+                "velocities_mps": self.cross_correlation_result.velocities_mps.tolist(),
+                "rmse_ms": self.cross_correlation_result.rmse_s * 1000.0,
+            }
+        payload["vs30"] = {
+            name: (
+                None
+                if value is None
+                else {
+                    "method": value.method,
+                    "value_mps": value.value_mps,
+                    "lower_bound_mps": value.lower_bound_mps,
+                    "upper_bound_mps": value.upper_bound_mps,
+                    "indicative_bands": list(value.indicative_vs30_bands),
+                }
+            )
+            for name, value in self.comparator_vs30.items()
+        }
+        return payload
+
     def _project_payload(self) -> dict[str, Any]:
         applied_pre_trigger_ms = (
             self.waveform_records[0].pre_trigger_ms
@@ -2998,6 +3517,10 @@ class RayPathMainWindow(QMainWindow):
             "vs30_primary_method": "TS 1170.5:2025 Method 1 — direct measured Vs",
             "vs30_extrapolation_weighting_status": "experimental sensitivity only",
             "arrival_estimator": self.estimator_combo.currentData(),
+            "comparator_settings": {
+                "geological_boundaries_m": self._comparator_boundaries(),
+                "boundary_provenance": self.comparator_provenance_edit.text().strip(),
+            },
             "vs30_history": [
                 {
                     "pick_kind": kind,
@@ -3102,6 +3625,7 @@ class RayPathMainWindow(QMainWindow):
                     "roughness_norm": self.regularization_selection.roughness_norm.tolist(),
                     "chord_distances": self.regularization_selection.chord_distances.tolist(),
                 }
+            payload["last_result"]["comparators"] = self._comparator_audit_payload()
         return payload
 
     @Slot()
@@ -3148,6 +3672,11 @@ class RayPathMainWindow(QMainWindow):
         )
         self.ensemble_size_spin.setValue(int(payload.get("uncertainty_ensemble_size", DEFAULT_ENSEMBLE_SIZE)))
         self.uncertainty_seed_spin.setValue(int(payload.get("uncertainty_random_seed", DEFAULT_UNCERTAINTY_SEED)))
+        comparator_settings = payload.get("comparator_settings", {}) if project_version >= 10 else {}
+        self._set_comparator_boundaries(comparator_settings.get("geological_boundaries_m", []))
+        self.comparator_provenance_edit.blockSignals(True)
+        self.comparator_provenance_edit.setText(str(comparator_settings.get("boundary_provenance", "")))
+        self.comparator_provenance_edit.blockSignals(False)
         saved_weight = float(payload.get("vs30_extrapolation_weight_factor", 1.0))
         saved_weight = float(np.clip(saved_weight, 0.25, 4.0))
         self.extrapolation_weight_slider.setValue(round(100.0 * math.log(saved_weight, 4.0)))
@@ -3533,14 +4062,155 @@ class RayPathMainWindow(QMainWindow):
                             PROJECT_SCHEMA_VERSION,
                         ]
                     )
+            exported_names = [target.name]
             if self.observation_review:
                 qc_target = target.with_name(f"{target.stem}_waveform_qc.csv")
                 self._export_waveform_qc_csv(qc_target)
-                self.status_label.setText(f"Exported {target.name} and {qc_target.name}")
-            else:
-                self.status_label.setText(f"Exported {target.name}")
+                exported_names.append(qc_target.name)
+            if any(
+                value is not None
+                for value in (self.slope_result, self.geological_result, self.cross_correlation_result)
+            ):
+                comparator_target = target.with_name(f"{target.stem}_comparators.csv")
+                self._export_comparator_csv(comparator_target)
+                exported_names.append(comparator_target.name)
+            self.status_label.setText("Exported " + ", ".join(exported_names))
         except Exception as exc:
             self._show_error("Unable to export CSV", exc)
+
+    def _export_comparator_csv(self, target: Path) -> None:
+        """Write the WP-05 comparator profiles and cross-correlation audit."""
+
+        with target.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "Record Type",
+                    "Interpretation",
+                    "Layer / Interval",
+                    "Top / From Depth (m)",
+                    "Bottom / To Depth (m)",
+                    "Velocity (m/s)",
+                    "Mean Interval Lag (ms)",
+                    "Left Correlation",
+                    "Right Correlation",
+                    "Model RMSE (ms)",
+                    "TS Method 1 Vs30 (m/s)",
+                    "TS Method 1 Lower Bound (m/s)",
+                    "TS Method 1 Upper Bound (m/s)",
+                    "Arrival Pick Kind",
+                    "Geological Boundaries (m)",
+                    "Boundary Source / Provenance",
+                    "Application Version",
+                    "Project Schema Version",
+                ]
+            )
+            boundary_text = ";".join(f"{value:.4f}" for value in self._comparator_boundaries())
+            provenance = self.comparator_provenance_edit.text().strip()
+
+            def vs30_columns(kind: str) -> tuple[str, str, str]:
+                value = self.comparator_vs30.get(kind)
+                if value is None:
+                    return "", "", ""
+                return (
+                    f"{value.value_mps:.3f}",
+                    f"{value.lower_bound_mps:.3f}",
+                    f"{value.upper_bound_mps:.3f}",
+                )
+
+            def write_profile_row(
+                interpretation: str,
+                kind: str,
+                index: int,
+                top: float,
+                bottom: float,
+                velocity: float,
+                rmse_ms: float | None,
+            ) -> None:
+                writer.writerow(
+                    [
+                        "velocity_layer",
+                        interpretation,
+                        index + 1,
+                        f"{top:.4f}",
+                        f"{bottom:.4f}",
+                        f"{velocity:.3f}",
+                        "",
+                        "",
+                        "",
+                        "" if rmse_ms is None else f"{rmse_ms:.4f}",
+                        *vs30_columns(kind),
+                        self.comparator_pick_kind or "",
+                        boundary_text,
+                        provenance,
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ]
+                )
+
+            if self.slope_result is not None:
+                for index, layer in enumerate(self.slope_result.layers):
+                    write_profile_row(
+                        "corrected_time_slope",
+                        "slope",
+                        index,
+                        layer.top_depth_m,
+                        layer.bottom_depth_m,
+                        layer.velocity_mps,
+                        layer.rmse_s * 1000.0,
+                    )
+            if self.geological_result is not None:
+                for index, (top, bottom, velocity) in enumerate(
+                    zip(
+                        self.geological_result.layer_tops_m,
+                        self.geological_result.layer_bottoms_m,
+                        self.geological_result.velocities_mps,
+                    )
+                ):
+                    write_profile_row(
+                        "geological_raypath",
+                        "geological",
+                        index,
+                        float(top),
+                        float(bottom),
+                        float(velocity),
+                        self.geological_result.rmse_s * 1000.0 if index == 0 else None,
+                    )
+            if self.cross_correlation_result is not None:
+                tops = np.r_[0.0, self.cross_correlation_result.depths_m[:-1]]
+                for index, (top, bottom, velocity) in enumerate(
+                    zip(tops, self.cross_correlation_result.depths_m, self.cross_correlation_result.velocities_mps)
+                ):
+                    write_profile_row(
+                        "successive_depth_cross_correlation",
+                        "cross_correlation",
+                        index,
+                        float(top),
+                        float(bottom),
+                        float(velocity),
+                        self.cross_correlation_result.rmse_s * 1000.0 if index == 0 else None,
+                    )
+            for index, interval in enumerate(self.cross_correlation_intervals):
+                writer.writerow(
+                    [
+                        "cross_correlation_interval",
+                        "successive_depth_cross_correlation",
+                        index + 1,
+                        f"{interval['from_depth_m']:.4f}",
+                        f"{interval['to_depth_m']:.4f}",
+                        "",
+                        f"{interval['mean_lag_ms']:.4f}",
+                        f"{interval['left_correlation']:.6f}",
+                        f"{interval['right_correlation']:.6f}",
+                        "",
+                        *vs30_columns("cross_correlation"),
+                        self.comparator_pick_kind or "",
+                        boundary_text,
+                        provenance,
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ]
+                )
 
     def _export_waveform_qc_csv(self, target: Path) -> None:
         """Write a companion receiver-level QC and exclusions schedule."""
@@ -3763,6 +4433,9 @@ class RayPathMainWindow(QMainWindow):
         self.ensemble_preset_combo.setEnabled(False)
         self.ensemble_size_spin.setEnabled(False)
         self.uncertainty_seed_spin.setEnabled(False)
+        self.comparator_boundary_table.setEnabled(False)
+        self.comparator_provenance_edit.setEnabled(False)
+        self.recalculate_comparators_button.setEnabled(False)
         self.status_label.setText("Solving refracted ray paths and velocity model…")
         self.rmse_label.setText("RMSE: calculating…")
         self._thread = QThread(self)
@@ -3891,6 +4564,7 @@ class RayPathMainWindow(QMainWindow):
         self.status_label.setText(
             f"Showing {PICK_LABELS.get(kind, kind)} model — {self.result.message}"
         )
+        self._update_comparator_results(show_errors=False)
 
     def _update_result_summary(self, result: InversionResult) -> None:
         """Update the textual engineering summary for the active result."""
@@ -3965,6 +4639,9 @@ class RayPathMainWindow(QMainWindow):
         self.ensemble_preset_combo.setEnabled(True)
         self.ensemble_size_spin.setEnabled(True)
         self.uncertainty_seed_spin.setEnabled(True)
+        self.comparator_boundary_table.setEnabled(True)
+        self.comparator_provenance_edit.setEnabled(True)
+        self.recalculate_comparators_button.setEnabled(True)
 
     def _populate_results(self, result: InversionResult) -> None:
         self.result_table.setRowCount(result.depths_m.size)
@@ -4053,6 +4730,41 @@ class RayPathMainWindow(QMainWindow):
                         "pick-time ensemble"
                     ),
                 )
+        if self.slope_result is not None:
+            slope_depths = np.asarray([layer.bottom_depth_m for layer in self.slope_result.layers])
+            slope_velocities = np.asarray([layer.velocity_mps for layer in self.slope_result.layers])
+            all_velocities.append(slope_velocities)
+            ax.stairs(
+                slope_velocities,
+                np.r_[0.0, slope_depths],
+                orientation="horizontal",
+                color="#00a6a6",
+                linewidth=2.0,
+                linestyle="--",
+                label="Corrected-time slope",
+            )
+        if self.geological_result is not None:
+            all_velocities.append(self.geological_result.velocities_mps)
+            ax.stairs(
+                self.geological_result.velocities_mps,
+                np.r_[0.0, self.geological_result.layer_bottoms_m],
+                orientation="horizontal",
+                color="#c87941",
+                linewidth=2.2,
+                linestyle="-.",
+                label="Geological RayPath",
+            )
+        if self.cross_correlation_result is not None:
+            all_velocities.append(self.cross_correlation_result.velocities_mps)
+            ax.stairs(
+                self.cross_correlation_result.velocities_mps,
+                np.r_[0.0, self.cross_correlation_result.depths_m],
+                orientation="horizontal",
+                color="#a371f7",
+                linewidth=1.8,
+                linestyle=":",
+                label="Successive-depth correlation",
+            )
         ax.set_title("Pick-based shear-wave velocity comparison")
         ax.set_xlabel("Vs (m/s)")
         ax.set_ylabel("Corrected vertical depth (m)")
@@ -4184,6 +4896,7 @@ class RayPathMainWindow(QMainWindow):
         ax.legend(**self.fit_canvas.legend_kwargs())
         self.fit_canvas.draw_idle()
         self._draw_vs30_analysis()
+        self._draw_comparator_results()
 
     # ---- lifecycle and dialogs ------------------------------------------
 

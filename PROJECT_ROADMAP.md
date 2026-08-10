@@ -109,17 +109,26 @@ Completed on 5 August 2026 (WP-04 — depth-aware regularisation and quantified 
 Completed on 10 August 2026 (verified baseline and architectural seams):
 
 - restored the synthetic GRU and reviewed-project regression fixtures and both Windows verification commands;
-- established a green 66-test baseline with numerical self-test, compilation, and PDF-generation checks;
+- established a green 69-test baseline with numerical self-test, compilation, and PDF-generation checks;
 - extracted Qt-free geometry, ray, Vs30, inversion, uncertainty, GRU, picking, QC, project-document, and comparator
   calculations into the `raypath_core` package while retaining the existing application import surface;
 - moved PDF assembly into `raypath_reporting.py`, called by the desktop application; and
 - added a process-isolated regression check that importing the engineering core does not load Qt or Matplotlib.
 
-WP-05 is now in progress. Its headless calculation foundation includes corrected vertical travel time, segmented
-slope fitting, reduced-parameter geological-layer forward modelling and inversion, and trace cross-correlation.
-Interactive boundary editing, project persistence, plots, comparisons, Vs30 propagation, and reporting of those
-new interpretations remain the next development work. WP-03 Method 2 remains a later extension for partially
-measured profiles; Method 3 remains deferred until its supporting inputs and provenance can be represented correctly.
+Completed on 10 August 2026 (WP-05 comparator integration):
+
+- updated the application to `0.8.0-alpha.1` and project schema 10;
+- added an editable geological-boundary workspace with recorded source/provenance and corrected-time plotting;
+- integrated segmented slope, reduced-parameter geological RayPath, and successive-depth cross-correlation models;
+- overlaid comparator velocities with pseudo-interval and receiver-interval RayPath results;
+- propagated valid comparator profiles through TS 1170.5:2025 Method 1 Vs30;
+- persisted comparator settings and calculation audit data and added companion CSV and PDF schedules; and
+- added GUI, schema-round-trip, export, PDF, underdetermination, and waveform-correlation regression coverage.
+
+WP-05 is substantially complete. Direct CPT/borelog boundary-file import, broader correlation-quality calibration,
+and the site-period comparison that depends on WP-06 remain outstanding. WP-03 Method 2 remains a later extension
+for partially measured profiles; Method 3 remains deferred until its supporting inputs and provenance can be
+represented correctly.
 
 ## 1. Purpose
 
@@ -264,7 +273,9 @@ Current limitations:
   posterior covariance analysis.
 - Pick-time ensembles represent recorded arrival uncertainty only; they do not quantify structural uncertainty
   from the one-dimensional horizontal-layer assumption, arrival-definition choice, or interpreted layer geometry.
-- No alternative slope-based or geological-layer interpretation is calculated for independent comparison.
+- Comparator interpretations remain subject to the same horizontal-layer applicability limits. The corrected-time
+  slope method uses a straight-ray cosine correction and is deliberately reported as an approximate independent
+  comparator rather than a substitute refracted-ray solution.
 
 ### 3.5 Visualisation and results
 
@@ -280,11 +291,15 @@ Implemented:
 - Convergence, raw and weighted RMSE, data and regularisation costs, standardised residuals, resolution, leverage,
   influence, outlier, and velocity-bound reporting.
 - Selected-model 95% velocity envelopes and arrival-time uncertainty bars.
+- An editable corrected-vertical-time comparator view with geological boundary overlays.
+- Velocity overlays for slope-method, geological-layer RayPath, and successive-depth cross-correlation models.
+- A comparator result table showing layer velocities, fitting error, and available Method 1 Vs30 results.
 
 Current limitations:
 
-- There is no corrected vertical travel-time plot or slope-method interpretation.
-- CPT stratigraphy and user-defined geological boundaries cannot be overlaid or used as model constraints.
+- Boundaries can be defined and attributed manually, but direct CPT/borelog boundary-file import is not implemented.
+- Cross-correlation is available only where successive reviewed waveform records have compatible sample arrays;
+  broader correlation thresholds and a dedicated analyst acceptance workflow remain to be calibrated.
 - Rejected waveform records are visibly excluded and omitted at the next inversion, but plot-based toggling is
   not yet available outside the waveform picker.
 
@@ -300,6 +315,7 @@ Implemented:
 - An experimental 0.25-to-4.0 slider that changes the shallower/deeper weighting used to estimate the missing 25-to-30 m interval.
 - A separate TS 1170.5:2025 Method 1 result with the prescribed shallow treatment, last-layer extension, 5% bounds,
   numerical-band screening, and a seeded pick-time ensemble interval.
+- Method 1 comparison for valid slope, geological-layer, and successive-depth cross-correlation profiles.
 
 Current limitations:
 
@@ -554,10 +570,11 @@ interpretive uncertainty remains explicit work for WP-05 and validation work for
 
 **Dependencies:** WP-01 and WP-04.
 
-**Status:** In progress. Headless implementations now cover steps 1, 3, 5, and the calculation primitive for step 7.
-The geological inversion enforces fewer velocity parameters than arrival observations. Steps 2, 4, 6, and 8 remain
-to be integrated into the desktop workflow, project schema, visualisations, Vs30 comparisons, and reports. The
-cross-correlation primitive still requires the successive-depth pairing and analyst-review workflow.
+**Status:** Substantially complete in schema 10. Steps 1 through 8 are integrated into the desktop workflow,
+project audit, visualisations, Method 1 Vs30 comparisons, CSV exports, and PDF reports. The geological inversion
+enforces fewer velocity parameters than arrival observations. Remaining refinements are direct boundary import,
+broader correlation-quality calibration and analyst acceptance controls, independent reference-dataset validation,
+and site-period propagation once WP-06 provides the controlling-boundary model.
 
 ### WP-06 — Add New Zealand standards context and site-period analysis
 
@@ -734,12 +751,12 @@ The next implementation cycle should follow this sequence:
    inversion, L-curve selection, diagnostics, and repeatable velocity/Vs30 ensembles.
 8. **Headless architectural extraction — complete.** Engineering calculations, waveform processing, project JSON
    I/O, and comparator primitives are separated from Qt; PDF assembly is separated from the main window.
-9. **WP-05 comparator interpretations — in progress.** Integrate the implemented corrected-time, slope-method,
-   geological-layer, and cross-correlation calculations with interactive boundaries, persistence, plots, Vs30,
-   and reporting.
+9. **WP-05 comparator interpretations — substantially complete.** Schema 10 integrates corrected-time,
+   slope-method, geological-layer, and cross-correlation calculations with editable attributed boundaries,
+   persistence, plots, Method 1 Vs30, CSV exports, and PDF reporting.
 
-WP-05 integration is now the next engineering-development package. Packaging remains deferred until the calculation
-and validation workflow is substantially stable.
+WP-06 standards context and site-period analysis is now the next engineering-development package. Packaging remains
+deferred until the calculation and validation workflow is substantially stable.
 
 ## 8. Release gates
 

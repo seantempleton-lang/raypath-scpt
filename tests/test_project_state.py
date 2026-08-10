@@ -29,11 +29,14 @@ from raypath_scpt import (
     RayPathMainWindow,
     SurveyGeometry,
     SurveyGeometryDialog,
+    WaveformRecord,
     WaveformPickerDialog,
     add_suggested_picks,
     apply_application_theme,
     parse_gru,
     forward_model,
+    forward_geological_model,
+    invert_velocity_profile,
 )
 
 
@@ -99,6 +102,114 @@ class ProjectStateTests(unittest.TestCase):
             window._set_dirty(False)
             window.close()
 
+    def test_schema_ten_comparator_settings_round_trip(self) -> None:
+        source = RayPathMainWindow()
+        loaded = RayPathMainWindow()
+        try:
+            source._set_comparator_boundaries([4.5, 12.0])
+            source.comparator_provenance_edit.setText("CPT log interpreted boundaries")
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "comparators.rpscpt"
+                source.project_path = path
+                self.assertTrue(source.save_project())
+                loaded._load_project(path)
+
+            self.assertEqual(loaded._comparator_boundaries(), [4.5, 12.0])
+            self.assertEqual(loaded.comparator_provenance_edit.text(), "CPT log interpreted boundaries")
+        finally:
+            source._set_dirty(False)
+            loaded._set_dirty(False)
+            source.close()
+            loaded.close()
+
+    def test_comparator_workspace_calculates_profiles_vs30_and_audit_exports(self) -> None:
+        window = RayPathMainWindow()
+        try:
+            depths = np.asarray([2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 20.0, 25.0])
+            expected_velocities = np.asarray([200.0, 400.0])
+            observed, _ = forward_geological_model(depths, expected_velocities, [5.0], 0.0)
+            selected = invert_velocity_profile(
+                depths,
+                observed,
+                0.0,
+                regularization=0.35,
+                observation_std_s=np.full(depths.size, 0.0002),
+            )
+            window.offset_spin.setValue(0.0)
+            window._set_all_pick_rows(
+                [
+                    (depth, {kind: time * 1000.0 for kind in ("first_peak", "crossover", "zero_cross", "max_peak")})
+                    for depth, time in zip(depths, observed)
+                ]
+            )
+            window._set_comparator_boundaries([5.0])
+            window.comparator_provenance_edit.setText("Synthetic two-layer reference")
+            window.comparison_results = {"crossover": selected}
+            window.result = selected
+            window._update_all_vs30_results(record_history=False)
+            window._update_comparator_results(show_errors=False)
+
+            self.assertIsNotNone(window.slope_result)
+            self.assertIsNotNone(window.geological_result)
+            np.testing.assert_allclose(
+                window.geological_result.velocities_mps,
+                expected_velocities,
+                rtol=2.0e-5,
+                atol=1.0e-4,
+            )
+            self.assertIsNotNone(window.comparator_vs30["slope"])
+            self.assertIsNotNone(window.comparator_vs30["geological"])
+            self.assertGreater(window.comparator_table.rowCount(), 0)
+            audit = window._project_payload()["last_result"]["comparators"]
+            self.assertEqual(audit["geological_boundaries_m"], [5.0])
+            self.assertEqual(audit["boundary_provenance"], "Synthetic two-layer reference")
+
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "comparators.csv"
+                window._export_comparator_csv(target)
+                csv_text = target.read_text(encoding="utf-8-sig")
+            self.assertIn("geological_raypath", csv_text)
+            self.assertIn("Synthetic two-layer reference", csv_text)
+        finally:
+            window._set_dirty(False)
+            window.close()
+
+    def test_comparator_workspace_builds_successive_depth_cross_correlation_model(self) -> None:
+        window = RayPathMainWindow()
+        try:
+            depths = np.asarray([2.0, 4.0, 6.0, 8.0])
+            observed = depths / 200.0
+            selected = invert_velocity_profile(
+                depths,
+                observed,
+                0.0,
+                regularization=0.2,
+                observation_std_s=np.full(depths.size, 0.0002),
+            )
+            time_ms = np.arange(-5.0, 50.5, 0.5)
+            base = np.zeros(time_ms.size)
+            base[20:25] = np.asarray([0.2, 0.8, 1.0, 0.8, 0.2])
+            records = []
+            for index, (depth, arrival) in enumerate(zip(depths, observed)):
+                shifted = np.roll(base, 2 * index)
+                record = WaveformRecord(index + 1, float(depth), time_ms.copy(), shifted, -shifted)
+                record.set_pair_pick("crossover", float(arrival * 1000.0))
+                record.review_state = "accepted"
+                records.append(record)
+            window.waveform_records = records
+            window.offset_spin.setValue(0.0)
+            window.comparison_results = {"crossover": selected}
+            window.result = selected
+            window._update_comparator_results(show_errors=False)
+
+            self.assertIsNotNone(window.cross_correlation_result)
+            self.assertEqual(len(window.cross_correlation_intervals), 3)
+            for interval in window.cross_correlation_intervals:
+                self.assertAlmostEqual(interval["mean_lag_ms"], 1.0)
+        finally:
+            window._set_dirty(False)
+            window.close()
+
     def test_extracted_pdf_report_builder_writes_a_report(self) -> None:
         window = RayPathMainWindow()
         try:
@@ -143,6 +254,10 @@ class ProjectStateTests(unittest.TestCase):
             window.comparison_results = {"crossover": result}
             window.result = result
             window._update_all_vs30_results(record_history=False)
+            window._set_comparator_boundaries([10.0])
+            window.comparator_provenance_edit.setText("Synthetic report boundary")
+            window._update_comparator_results(show_errors=False)
+            self.assertIsNotNone(window.geological_result)
 
             with tempfile.TemporaryDirectory() as directory:
                 target = Path(directory) / "report.pdf"
