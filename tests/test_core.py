@@ -540,6 +540,31 @@ class GruImportBaselineTests(unittest.TestCase):
         self.assertIn("test 23", messages[0])
         self.assertIn("20.01 m", messages[0])
 
+    def test_complete_single_channel_acquisition_is_skipped_and_reported(self) -> None:
+        content = """[SEISMIC TEST=25  DEPTH=13]
+*E:0#17:0!
+*E:50#17:1!
+*E:100#17:0!
+[SEISMIC TEST END]
+[SEISMIC TEST=26  DEPTH=13]
+*E:0#17:0#18:0!
+*E:50#17:1#18:-1!
+*E:100#17:0#18:0!
+[SEISMIC TEST END]
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "single-channel-block.GRU"
+            source.write_text(content, encoding="utf-8")
+            messages: list[str] = []
+
+            records = parse_gru(source, import_messages=messages)
+
+        self.assertEqual([record.test_number for record in records], [26])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("test 25", messages[0])
+        self.assertIn("channel #18 missing", messages[0])
+        self.assertIn("3 waveform samples", messages[0])
+
     def test_partially_populated_acquisition_block_remains_an_error(self) -> None:
         content = """[SEISMIC TEST=23  DEPTH=20.01]
 *E:0#17:0#18:0!

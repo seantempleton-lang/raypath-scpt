@@ -109,7 +109,7 @@ Completed on 5 August 2026 (WP-04 — depth-aware regularisation and quantified 
 Completed on 10 August 2026 (verified baseline and architectural seams):
 
 - restored the synthetic GRU and reviewed-project regression fixtures and both Windows verification commands;
-- established a green 69-test baseline with numerical self-test, compilation, and PDF-generation checks;
+- established a green 70-test baseline with numerical self-test, compilation, and PDF-generation checks;
 - extracted Qt-free geometry, ray, Vs30, inversion, uncertainty, GRU, picking, QC, project-document, and comparator
   calculations into the `raypath_core` package while retaining the existing application import surface;
 - moved PDF assembly into `raypath_reporting.py`, called by the desktop application; and
@@ -124,6 +124,17 @@ Completed on 10 August 2026 (WP-05 comparator integration):
 - propagated valid comparator profiles through TS 1170.5:2025 Method 1 Vs30;
 - persisted comparator settings and calculation audit data and added companion CSV and PDF schedules; and
 - added GUI, schema-round-trip, export, PDF, underdetermination, and waveform-correlation regression coverage.
+
+Completed on 10 August 2026 (source-tree launch and GRU import resilience):
+
+- restored the root-level `Run RayPath SCPT.vbs` Windows launcher with project-environment preference, explicit
+  `RAYPATH_SCPT_PYTHON` support, installed-runtime discovery, dependency probing, and a no-console GUI launch;
+- verified the launcher end to end through the application's non-GUI self-test;
+- distinguished syntactically valid single-channel GRU acquisitions from malformed or truncated paired records;
+- skipped complete single-channel acquisitions with a specific import audit note rather than aborting the full file;
+  and
+- verified the revised import pipeline against a real profile containing 71 usable paired records and one
+  3,000-sample channel-17-only acquisition, without modifying the source file.
 
 WP-05 is substantially complete. Direct CPT/borelog boundary-file import, broader correlation-quality calibration,
 and the site-period comparison that depends on WP-06 remain outstanding. WP-03 Method 2 remains a later extension
@@ -172,9 +183,11 @@ following dependencies are recorded in `requirements.txt`:
 - ReportLab 4.2 or later.
 
 The first architectural extraction is complete: numerical and project-document modules can be imported without Qt
-or Matplotlib, while existing launchers and imports remain compatible. The main window still owns substantial UI
-state, project-to-widget migration, CSV export, plotting, and orchestration. Those responsibilities should continue
-to move behind data-oriented interfaces incrementally rather than through a single high-risk rewrite.
+or Matplotlib, while existing launchers and imports remain compatible. `Run RayPath SCPT.vbs` provides a verified
+source-tree Windows launch path while portable packaging remains deferred to WP-09. The main window still owns
+substantial UI state, project-to-widget migration, CSV export, plotting, and orchestration. Those responsibilities
+should continue to move behind data-oriented interfaces incrementally rather than through a single high-risk
+rewrite.
 
 ### 3.2 Data import and project state
 
@@ -191,6 +204,8 @@ Implemented:
 - Automatic GRU #30/#31 cone-tilt import, receiver-interval vertical projection, and an explicit warning that
   horizontal deviation requires a known inclinometer-axis orientation/azimuth.
 - Validation that imported time arrays increase monotonically and span the configured trigger time.
+- Audited skipping of complete single-channel #17/#18 acquisitions that cannot form paired traces, while malformed
+  rows, mixed paired/unpaired blocks, and truncated paired records remain import errors.
 - Editable manual input table for depth and four arrival interpretations: first peak/trough, pair crossover,
   experimental individual zero crossing, and experimental maximum peak.
 - Excel/CSV-style grid paste support.
@@ -386,6 +401,7 @@ Packaging begins only after the M3 release gates are satisfied and the M4 valida
    - near-critical ray parameters;
    - synthetic inversion recovery;
    - GRU pre-trigger conversion;
+   - empty, complete single-channel, and truncated GRU acquisition handling;
    - project save/open round-tripping;
    - all existing Vs30 calculations; and
    - legacy project migration.
@@ -680,6 +696,10 @@ and site-period propagation once WP-06 provides the controlling-boundary model.
 
 **Objective:** Produce a maintainable, reproducible Windows application only after the technical workflow is stable.
 
+**Current early prototype:** The restored root-level `Run RayPath SCPT.vbs` launcher provides a verified way to run
+the source tree with a compatible installed Python environment. It is a development convenience, not evidence that
+the clean-machine packaging or deployment acceptance criteria below have been met.
+
 **Implementation pathway:**
 
 1. Continue the staged refactor, building on the existing `raypath_core` package and extracted report builder, toward
@@ -754,6 +774,8 @@ The next implementation cycle should follow this sequence:
 9. **WP-05 comparator interpretations — substantially complete.** Schema 10 integrates corrected-time,
    slope-method, geological-layer, and cross-correlation calculations with editable attributed boundaries,
    persistence, plots, Method 1 Vs30, CSV exports, and PDF reporting.
+10. **Operational baseline hardening — complete.** The source-tree VBS launcher is restored, complete single-channel
+    GRU acquisitions are skipped with an audit note, and the 70-test baseline plus application self-test passes.
 
 WP-06 standards context and site-period analysis is now the next engineering-development package. Packaging remains
 deferred until the calculation and validation workflow is substantially stable.

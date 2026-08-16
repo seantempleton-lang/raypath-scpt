@@ -10,6 +10,7 @@ __pycache__/
 *.[Vv][Bb][Ss]
 
 # Approved verification assets are part of the reproducible test baseline.
+!Run RayPath SCPT.vbs
 !scripts/verify.cmd
 !tests/fixtures/
 !tests/fixtures/minimal.GRU

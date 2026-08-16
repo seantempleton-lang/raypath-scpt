@@ -1,8 +1,9 @@
 """RayPath SCPT - forward ray-path modelling and SCPT velocity inversion.
 
-This single-file desktop application imports GOnsite/GORILLA ``.GRU`` seismic
-records, supports review and manual picking of opposing shear-wave traces, and
-estimates a layered shear-wave velocity profile by regularised least squares.
+This desktop application imports GOnsite/GORILLA ``.GRU`` records and SCPT
+acquisition soundings, supports review and manual picking of opposing
+shear-wave traces, and estimates a layered shear-wave velocity profile by
+regularised least squares.
 
 All public engineering quantities use SI units: metres, milliseconds, and
 metres per second.  Angles in the numerical core are measured from vertical.
@@ -601,7 +602,7 @@ class SurveyGeometryDialog(QDialog):
 
 
 class WaveformPickerDialog(QDialog):
-    """Modal reviewer for seven manual markers on every paired GRU record."""
+    """Modal reviewer for seven manual markers on every paired shear record."""
 
     picks_changed = Signal()
 
@@ -631,6 +632,7 @@ class WaveformPickerDialog(QDialog):
         self.marker_buttons: dict[tuple[str, int | None], QRadioButton] = {}
         self._click_connection: int | None = None
         self._loaded_record_index = -1
+        self._hit_table_loading = False
         self.setWindowTitle(f"Waveform Picker — {source_name}")
         self.setWindowFlags(
             self.windowFlags()
@@ -650,8 +652,8 @@ class WaveformPickerDialog(QDialog):
             "Guided picking order: First peak/trough Left/blue, Right/red; one pair crossover; individual "
             "zero crossing Left/blue, Right/red; Maximum peak Left/blue, Right/red. Each click advances "
             "automatically. Individual zero crossings and maximum peaks are comparison aids. Suggestions "
-            f"are review aids only. GRU times include the {self.records[0].pre_trigger_ms:g} ms "
-            "pre-trigger correction."
+            "are review aids only. Times are displayed in milliseconds relative to the physical trigger; "
+            "source-specific timing details are retained in the project audit."
         )
         guidance.setWordWrap(True)
         guidance.setObjectName("subtleLabel")
@@ -667,6 +669,27 @@ class WaveformPickerDialog(QDialog):
         self.record_list = QListWidget()
         self.record_list.currentRowChanged.connect(self._record_changed)
         left_layout.addWidget(self.record_list, 1)
+
+        self.hit_review_box = QGroupBox("Acquisition stack contributors")
+        hit_review_layout = QVBoxLayout(self.hit_review_box)
+        hit_note = QLabel("Clear Use to exclude a hit and rebuild that depth's direct-sum stack.")
+        hit_note.setWordWrap(True)
+        hit_note.setObjectName("subtleLabel")
+        hit_review_layout.addWidget(hit_note)
+        self.hit_table = QTableWidget(0, 6)
+        self.hit_table.setHorizontalHeaderLabels(["Use", "Side", "Hit", "Comp", "Acq corr", "SNR"])
+        self.hit_table.verticalHeader().setVisible(False)
+        self.hit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.hit_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.hit_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.hit_table.setMaximumHeight(190)
+        self.hit_table.itemChanged.connect(self._hit_inclusion_changed)
+        self.hit_table.itemSelectionChanged.connect(
+            lambda: self._draw_record(preserve_view=True)
+        )
+        hit_review_layout.addWidget(self.hit_table)
+        self.hit_review_box.setVisible(False)
+        left_layout.addWidget(self.hit_review_box)
         suggest_button = QPushButton("Regenerate suggestions for record")
         suggest_button.clicked.connect(self._resuggest_current)
         left_layout.addWidget(suggest_button)
@@ -856,17 +879,110 @@ class WaveformPickerDialog(QDialog):
             "accepted_with_comment": "ACCEPTED + NOTE",
             "rejected": "REJECTED",
         }.get(record.review_state, "NOT REVIEWED")
+        contributor_text = ""
+        if record.acquisition_hits:
+            left_count, right_count = record.acquisition_contributor_counts()
+            contributor_text = f"   Hits L{left_count}/R{right_count}"
         return (
             f"Test {record.test_number:>3}   {record.depth_m:>6.2f} m   "
-            f"[{complete}/{len(PICK_SEQUENCE)}]   {state_tag}   QC {warning_count}"
+            f"[{complete}/{len(PICK_SEQUENCE)}]   {state_tag}   QC {warning_count}{contributor_text}"
         )
 
     def _record_changed(self, row: int) -> None:
         if row >= 0:
             self._loaded_record_index = row
+            self._load_hit_controls(self.records[row])
             self._load_review_controls(self.records[row])
             self._select_marker("first_peak", 17)
             self._draw_record()
+
+    def _load_hit_controls(self, record: WaveformRecord) -> None:
+        """Populate contributor controls without treating display changes as edits."""
+
+        self._hit_table_loading = True
+        self.hit_table.blockSignals(True)
+        try:
+            hits = sorted(
+                record.acquisition_hits,
+                key=lambda hit: (hit.wave_type != "shear_left", hit.hit_number),
+            )
+            self.hit_table.setRowCount(len(hits))
+            for row, hit in enumerate(hits):
+                use_item = QTableWidgetItem("")
+                use_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsSelectable
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                use_item.setCheckState(
+                    Qt.CheckState.Checked if hit.included else Qt.CheckState.Unchecked
+                )
+                use_item.setData(Qt.ItemDataRole.UserRole, hit.key)
+                self.hit_table.setItem(row, 0, use_item)
+                correlation = "ref" if hit.correlation_coefficient is None else f"{hit.correlation_coefficient:.3f}"
+                snr = "—" if hit.signal_to_noise_ratio is None else f"{hit.signal_to_noise_ratio:.1f}"
+                values = (
+                    "Left" if hit.wave_type == "shear_left" else "Right",
+                    str(hit.hit_number),
+                    hit.selected_channel.upper(),
+                    correlation,
+                    snr,
+                )
+                for column, value in enumerate(values, 1):
+                    cell = QTableWidgetItem(value)
+                    cell.setToolTip(hit.raw_file)
+                    self.hit_table.setItem(row, column, cell)
+            left_count, right_count = record.acquisition_contributor_counts()
+            left_total = sum(hit.wave_type == "shear_left" for hit in record.acquisition_hits)
+            right_total = sum(hit.wave_type == "shear_right" for hit in record.acquisition_hits)
+            self.hit_review_box.setTitle(
+                f"Acquisition stack contributors — Left {left_count}/{left_total}, Right {right_count}/{right_total}"
+            )
+            self.hit_review_box.setVisible(bool(hits))
+        finally:
+            self.hit_table.blockSignals(False)
+            self._hit_table_loading = False
+
+    def _hit_inclusion_changed(self, item: QTableWidgetItem) -> None:
+        """Rebuild the active stack after an acquisition contributor toggle."""
+
+        if self._hit_table_loading or item.column() != 0:
+            return
+        row = self.record_list.currentRow()
+        if row < 0:
+            return
+        record = self.records[row]
+        raw_key = item.data(Qt.ItemDataRole.UserRole)
+        key = tuple(raw_key) if isinstance(raw_key, (list, tuple)) else None
+        hit = next((candidate for candidate in record.acquisition_hits if candidate.key == key), None)
+        if hit is None:
+            return
+        included = item.checkState() == Qt.CheckState.Checked
+        if included == hit.included:
+            return
+        previous = hit.included
+        hit.included = included
+        try:
+            record.rebuild_acquisition_stacks()
+        except ValueError as exc:
+            hit.included = previous
+            self._hit_table_loading = True
+            item.setCheckState(Qt.CheckState.Checked if previous else Qt.CheckState.Unchecked)
+            self._hit_table_loading = False
+            QMessageBox.warning(self, "Contributor required", str(exc))
+            return
+
+        record.picks_ms = {}
+        record.review_state = "not_reviewed"
+        record.pick_uncertainty_ms = None
+        record.pick_uncertainty_source = "automatic_qc_default"
+        record.pick_uncertainty_basis = "Recalculated after acquisition contributor selection changed."
+        add_suggested_picks([record], overwrite=True)
+        self._load_hit_controls(record)
+        self._load_review_controls(record)
+        self._refresh_list_item(row)
+        self._draw_record(preserve_view=True)
+        self.picks_changed.emit()
 
     def _load_review_controls(self, record: WaveformRecord) -> None:
         """Load audit controls without treating display changes as analyst edits."""
@@ -1173,8 +1289,38 @@ class WaveformPickerDialog(QDialog):
             ax.axvspan(record.time_ms[0], 0.0, color="#8b949e", alpha=0.10, label="Pre-trigger")
         ax.axvline(0.0, color="#3fb950", linewidth=1.4, alpha=0.95, label="Trigger")
         ax.axhline(0.0, color="#8b949e", linewidth=0.8, alpha=0.8)
-        ax.plot(record.time_ms, record.left, color="#58a6ff", linewidth=1.0, label="Left (#17)")
-        ax.plot(record.time_ms, record.right, color="#ff7b72", linewidth=1.0, label="Right (#18)")
+        selected_hit_keys = {
+            tuple(key)
+            for table_item in self.hit_table.selectedItems()
+            if table_item.column() == 0
+            and isinstance((key := table_item.data(Qt.ItemDataRole.UserRole)), (list, tuple))
+        }
+        for hit in sorted(
+            record.acquisition_hits,
+            key=lambda contributor: (contributor.wave_type != "shear_left", contributor.hit_number),
+        ):
+            side = "L" if hit.wave_type == "shear_left" else "R"
+            color = "#58a6ff" if hit.wave_type == "shear_left" else "#ff7b72"
+            if not hit.included:
+                color = "#8b949e"
+            selected = hit.key in selected_hit_keys
+            ax.plot(
+                hit.time_ms,
+                hit.values,
+                color=color,
+                linewidth=1.5 if selected else 0.65,
+                linestyle="-" if hit.included else ":",
+                alpha=0.95 if selected else (0.38 if hit.included else 0.55),
+                label=(
+                    f"{side} hit {hit.hit_number} {hit.selected_channel.upper()}"
+                    + ("" if hit.included else " (excluded)")
+                ),
+            )
+        left_count, right_count = record.acquisition_contributor_counts()
+        left_label = f"Left stack ({left_count} hits)" if record.acquisition_hits else "Left trace"
+        right_label = f"Right stack ({right_count} hits)" if record.acquisition_hits else "Right trace"
+        ax.plot(record.time_ms, record.left, color="#58a6ff", linewidth=1.5, label=left_label)
+        ax.plot(record.time_ms, record.right, color="#ff7b72", linewidth=1.5, label=right_label)
         if self.butterfly_checkbox.isChecked():
             pre_trigger = record.time_ms < 0.0
             left_baseline = float(np.median(record.left[pre_trigger]))
@@ -1426,6 +1572,7 @@ class RayPathMainWindow(QMainWindow):
         self.project_path: Path | None = None
         self.gru_path: Path | None = None
         self.gru_pre_trigger_ms: float | None = None
+        self.waveform_source_format: str | None = None
         self.survey_geometry = SurveyGeometry()
         self.active_geometry: CorrectedGeometry | None = None
         self.waveform_records: list[WaveformRecord] = []
@@ -1480,8 +1627,12 @@ class RayPathMainWindow(QMainWindow):
         menu.addAction(self.exit_action)
 
         seismic_menu = self.menuBar().addMenu("&Seismic")
+        self.import_acquisition_action = QAction(
+            "Import SCPT Acquisition Sounding...", self, triggered=self.import_scpt_acquisition
+        )
         self.review_action = QAction("Review &Waveform Picks…", self, triggered=self.review_waveforms)
         self.review_action.setEnabled(False)
+        seismic_menu.addAction(self.import_acquisition_action)
         seismic_menu.addAction(self.review_action)
 
         units_menu = self.menuBar().addMenu("&Units")
@@ -1534,7 +1685,7 @@ class RayPathMainWindow(QMainWindow):
 
         status = QStatusBar()
         self.setStatusBar(status)
-        self.status_label = QLabel("Ready — import a GRU file or enter observations")
+        self.status_label = QLabel("Ready — import waveforms or enter observations")
         status.addWidget(self.status_label, 1)
         self.rmse_label = QLabel("RMSE: — ms")
         status.addPermanentWidget(self.rmse_label)
@@ -1614,15 +1765,21 @@ class RayPathMainWindow(QMainWindow):
         import_button = QPushButton("Import GRU Waveforms…")
         import_button.clicked.connect(self.import_gru)
         waveform_buttons.addWidget(import_button)
+        import_acquisition_button = QPushButton("Import Acquisition Sounding...")
+        import_acquisition_button.setToolTip(
+            "Import paired shear-left and shear-right stacks from an SCPT acquisition output folder."
+        )
+        import_acquisition_button.clicked.connect(self.import_scpt_acquisition)
+        waveform_buttons.addWidget(import_acquisition_button)
+        layout.addLayout(waveform_buttons)
         self.review_waveforms_button = QPushButton("Return to Waveform Picker…")
         self.review_waveforms_button.setEnabled(False)
         self.review_waveforms_button.setToolTip(
-            "Reopen the picker for the currently loaded GRU waveforms."
+            "Reopen the picker for the currently loaded waveforms."
         )
         self.review_waveforms_button.clicked.connect(self.review_waveforms)
-        waveform_buttons.addWidget(self.review_waveforms_button)
-        layout.addLayout(waveform_buttons)
-        self.gru_label = QLabel("No GRU source loaded")
+        layout.addWidget(self.review_waveforms_button)
+        self.gru_label = QLabel("No waveform source loaded")
         self.gru_label.setWordWrap(True)
         self.gru_label.setObjectName("subtleLabel")
         layout.addWidget(self.gru_label)
@@ -1641,8 +1798,8 @@ class RayPathMainWindow(QMainWindow):
             ]
         )
         self.input_table.setToolTip(
-            "Arrival times are measured relative to the physical trigger. GRU imports record the applied "
-            "pre-trigger correction in the project audit data."
+            "Arrival times are measured relative to the physical trigger. Source timing and any applied "
+            "correction are recorded in the project audit data."
         )
         self.input_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.input_table.verticalHeader().setDefaultSectionSize(27)
@@ -1701,7 +1858,7 @@ class RayPathMainWindow(QMainWindow):
         self.manual_uncertainty_spin.setValue(DEFAULT_MANUAL_PICK_UNCERTAINTY_MS)
         self.manual_uncertainty_spin.setSuffix(" ms (1σ)")
         self.manual_uncertainty_spin.setToolTip(
-            "Fallback one-standard-deviation uncertainty for manual/CSV observations and any GRU interval "
+            "Fallback one-standard-deviation uncertainty for manual/CSV observations and any waveform interval "
             "without a recorded per-depth value."
         )
         self.manual_uncertainty_spin.valueChanged.connect(self._inversion_option_changed)
@@ -2195,10 +2352,11 @@ class RayPathMainWindow(QMainWindow):
         self.observation_review = {}
         self.gru_path = None
         self.gru_pre_trigger_ms = None
+        self.waveform_source_format = None
         self.survey_geometry = SurveyGeometry()
         self.active_geometry = None
         self._set_waveform_review_available(False)
-        self.gru_label.setText("No GRU source loaded")
+        self.gru_label.setText("No waveform source loaded")
         self.input_table.blockSignals(True)
         self.input_table.clearContents()
         self.input_table.setRowCount(8)
@@ -2215,7 +2373,7 @@ class RayPathMainWindow(QMainWindow):
         self._set_comparator_boundaries([])
         self.comparator_provenance_edit.clear()
         self._clear_results()
-        self.status_label.setText("Ready — import a GRU file or enter observations")
+        self.status_label.setText("Ready — import waveforms or enter observations")
         self._update_geometry_status()
 
     def _set_waveform_review_available(self, available: bool) -> None:
@@ -2624,7 +2782,7 @@ class RayPathMainWindow(QMainWindow):
             ax.text(
                 0.5,
                 0.5,
-                "Import a GRU file to populate",
+                "Import waveform data to populate",
                 transform=ax.transAxes,
                 ha="center",
                 va="center",
@@ -3053,6 +3211,70 @@ class RayPathMainWindow(QMainWindow):
         except Exception as exc:
             self._show_error("Unable to import GRU file", exc)
 
+    @Slot()
+    def import_scpt_acquisition(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Import SCPT Acquisition Sounding",
+            "",
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not path:
+            return
+        try:
+            self._load_scpt_acquisition(Path(path))
+        except Exception as exc:
+            self._show_error("Unable to import SCPT acquisition sounding", exc)
+
+    def _load_scpt_acquisition(self, path: Path) -> bool:
+        """Import acquisition direct-sum shear stacks into the picker."""
+
+        root = path if path.is_dir() else path.parent
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        import_messages: list[str] = []
+        try:
+            records = parse_scpt_acquisition(root, import_messages=import_messages)
+            add_suggested_picks(records)
+        finally:
+            QApplication.restoreOverrideCursor()
+        dialog = WaveformPickerDialog(
+            records,
+            root.name,
+            self,
+            max_peak_half_width_ms=self.picker_half_width_ms,
+        )
+        dialog_result = dialog.exec()
+        self.picker_half_width_ms = dialog.max_peak_half_width_ms
+        if dialog_result != QDialog.DialogCode.Accepted:
+            return False
+
+        self.waveform_records = records
+        self.gru_path = root
+        self.gru_pre_trigger_ms = 0.0
+        self.waveform_source_format = "scpt_acquisition"
+        self.survey_geometry = SurveyGeometry()
+        self.active_geometry = None
+        self.project_path = None
+        self._set_waveform_review_available(True)
+        self.gru_label.setText(
+            f"{root.name} - {len(records)} paired acquisition shear stacks - trigger-relative source clock"
+        )
+        self.gru_label.setToolTip("\n".join(import_messages))
+        if import_messages:
+            self.gru_label.setText(f"{self.gru_label.text()}; {len(import_messages)} import note(s)")
+        self._populate_table_from_picks()
+        self._clear_results()
+        rejected = sum(record.is_excluded for record in records)
+        unreviewed = sum(record.review_state == "not_reviewed" for record in records)
+        self.status_label.setText(
+            f"Imported {len(records)} acquisition shear-stack pairs - "
+            f"{rejected} rejected/excluded, {unreviewed} not reviewed"
+        )
+        if import_messages:
+            self.status_label.setText(f"{self.status_label.text()}; {len(import_messages)} import note(s)")
+        self._set_dirty(True)
+        return True
+
     def _load_gru(self, path: Path, pre_trigger_ms: float | None = None) -> bool:
         """Import a GRU file after explicitly confirming its timing correction."""
 
@@ -3092,6 +3314,7 @@ class RayPathMainWindow(QMainWindow):
         self.waveform_records = records
         self.gru_path = path
         self.gru_pre_trigger_ms = applied_pre_trigger_ms
+        self.waveform_source_format = "gru"
         self.survey_geometry = SurveyGeometry(
             deviation_points=imported_deviation_points,
             notes=(
@@ -3174,10 +3397,13 @@ class RayPathMainWindow(QMainWindow):
                 record.review_state in ("accepted", "accepted_with_comment")
                 for record in self.waveform_records
             )
+            if self.waveform_source_format == "scpt_acquisition":
+                source_summary = "paired acquisition shear stacks — trigger-relative source clock"
+            else:
+                source_summary = f"paired GRU records — {applied_pre_trigger_ms:g} ms pre-trigger corrected"
             self.gru_label.setText(
-                f"{self.gru_path.name} — {len(self.waveform_records)} paired records — "
-                f"{accepted} accepted, {rejected} rejected, {unreviewed} not reviewed — "
-                f"{applied_pre_trigger_ms:g} ms pre-trigger corrected"
+                f"{self.gru_path.name} — {len(self.waveform_records)} {source_summary} — "
+                f"{accepted} accepted, {rejected} rejected, {unreviewed} not reviewed"
             )
         if status_parts:
             self.status_label.setText("Waveform review: " + "; ".join(status_parts))
@@ -3296,6 +3522,9 @@ class RayPathMainWindow(QMainWindow):
                 record.pick_uncertainty_ms,
                 record.pick_uncertainty_source,
                 record.pick_uncertainty_basis,
+                record.left.copy(),
+                record.right.copy(),
+                [hit.included for hit in record.acquisition_hits],
             )
             for record in self.waveform_records
         ]
@@ -3312,7 +3541,17 @@ class RayPathMainWindow(QMainWindow):
             self._clear_results()
             self._set_dirty(True)
         else:
-            for record, (picks, state, comment, uncertainty, uncertainty_source, uncertainty_basis) in zip(
+            for record, (
+                picks,
+                state,
+                comment,
+                uncertainty,
+                uncertainty_source,
+                uncertainty_basis,
+                left,
+                right,
+                hit_inclusions,
+            ) in zip(
                 self.waveform_records, backup
             ):
                 record.picks_ms = picks
@@ -3321,6 +3560,10 @@ class RayPathMainWindow(QMainWindow):
                 record.pick_uncertainty_ms = uncertainty
                 record.pick_uncertainty_source = uncertainty_source
                 record.pick_uncertainty_basis = uncertainty_basis
+                record.left = left
+                record.right = right
+                for hit, included in zip(record.acquisition_hits, hit_inclusions):
+                    hit.included = included
 
     def _load_observation_csv(self, path: Path) -> None:
         rows: list[tuple[float, dict[str, float | None]]] = []
@@ -3435,6 +3678,21 @@ class RayPathMainWindow(QMainWindow):
             if self.waveform_records
             else self.gru_pre_trigger_ms
         )
+        source_format = self.waveform_source_format or ("gru" if self.gru_path else None)
+        if source_format == "scpt_acquisition":
+            timing_audit = {
+                "recorded_clock": "SCPT acquisition time_from_trigger_s",
+                "analysis_clock": "milliseconds relative to physical trigger",
+                "correction": "none; acquisition source clock is already trigger-relative",
+                "pre_trigger_ms": 0.0,
+            }
+        else:
+            timing_audit = {
+                "recorded_clock": "GRU sample time",
+                "analysis_clock": "milliseconds relative to physical trigger",
+                "correction": "trigger_relative_ms = recorded_ms - pre_trigger_ms",
+                "pre_trigger_ms": applied_pre_trigger_ms,
+            }
         if self.waveform_records:
             self.observation_review = {
                 round(record.depth_m, 6): {
@@ -3485,14 +3743,10 @@ class RayPathMainWindow(QMainWindow):
             "schema_version": PROJECT_SCHEMA_VERSION,
             "application_version": APP_VERSION,
             "units": "SI",
+            "waveform_source_format": source_format,
             "gru_pre_trigger_ms": applied_pre_trigger_ms,
             "pick_time_reference": "relative_to_trigger",
-            "timing_audit": {
-                "recorded_clock": "GRU sample time",
-                "analysis_clock": "milliseconds relative to physical trigger",
-                "correction": "trigger_relative_ms = recorded_ms - pre_trigger_ms",
-                "pre_trigger_ms": applied_pre_trigger_ms,
-            },
+            "timing_audit": timing_audit,
             "qc_configuration": {
                 "method_version": 1,
                 "snr_warning_db": QC_SNR_WARNING_DB,
@@ -3531,7 +3785,12 @@ class RayPathMainWindow(QMainWindow):
                 }
                 for (kind, smoothing, weighting), value in sorted(self.vs30_history.items())
             ],
-            "gru_source": str(self.gru_path) if self.gru_path else None,
+            "waveform_source": str(self.gru_path) if self.gru_path else None,
+            "gru_source": (
+                str(self.gru_path)
+                if self.gru_path and source_format == "gru"
+                else None
+            ),
             "inputs": inputs,
             "picks": [
                 {
@@ -3553,6 +3812,19 @@ class RayPathMainWindow(QMainWindow):
                     "pick_uncertainty_source": record.pick_uncertainty_source,
                     "pick_uncertainty_basis": record.pick_uncertainty_basis,
                     "qc_metrics": calculate_waveform_qc(record).to_dict(),
+                    "acquisition_hit_review": [
+                        {
+                            "wave_type": hit.wave_type,
+                            "hit_number": hit.hit_number,
+                            "included": hit.included,
+                            "selected_channel": hit.selected_channel,
+                            "raw_file": hit.raw_file,
+                            "correlation_coefficient": hit.correlation_coefficient,
+                            "correlation_lag_samples": hit.correlation_lag_samples,
+                            "signal_to_noise_ratio": hit.signal_to_noise_ratio,
+                        }
+                        for hit in record.acquisition_hits
+                    ],
                 }
                 for record in self.waveform_records
             ],
@@ -3744,21 +4016,39 @@ class RayPathMainWindow(QMainWindow):
             legacy_kind = str(payload.get("arrival_estimator", "first_cross"))
             self._set_input_rows(rows, "zero_cross" if legacy_kind == "first_cross" else legacy_kind)
         self.waveform_records = []
-        self.gru_path = Path(payload["gru_source"]) if payload.get("gru_source") else None
-        raw_pre_trigger = payload.get("gru_pre_trigger_ms", GRU_PRE_TRIGGER_MS)
+        saved_waveform_source = payload.get("waveform_source", payload.get("gru_source"))
+        self.gru_path = Path(saved_waveform_source) if saved_waveform_source else None
+        default_source_format = "gru" if self.gru_path else None
+        raw_source_format = payload.get("waveform_source_format", default_source_format)
+        self.waveform_source_format = str(raw_source_format) if raw_source_format else None
+        if self.waveform_source_format not in (None, "gru", "scpt_acquisition"):
+            raise ValueError(f"Unsupported saved waveform source format: {self.waveform_source_format}")
+        default_pre_trigger = 0.0 if self.waveform_source_format == "scpt_acquisition" else GRU_PRE_TRIGGER_MS
+        raw_pre_trigger = payload.get("gru_pre_trigger_ms", default_pre_trigger)
         if self.gru_path:
             self.gru_pre_trigger_ms = float(raw_pre_trigger)
             if not math.isfinite(self.gru_pre_trigger_ms) or self.gru_pre_trigger_ms < 0.0:
-                raise ValueError("Saved GRU pre-trigger correction is invalid.")
+                raise ValueError("Saved waveform timing correction is invalid.")
         else:
             self.gru_pre_trigger_ms = None
-        if self.gru_path and self.gru_path.is_file():
+        source_available = bool(
+            self.gru_path
+            and (
+                self.gru_path.is_dir()
+                if self.waveform_source_format == "scpt_acquisition"
+                else self.gru_path.is_file()
+            )
+        )
+        if source_available:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
-                self.waveform_records = parse_gru(
-                    self.gru_path,
-                    pre_trigger_ms=self.gru_pre_trigger_ms,
-                )
+                if self.waveform_source_format == "scpt_acquisition":
+                    self.waveform_records = parse_scpt_acquisition(self.gru_path)
+                else:
+                    self.waveform_records = parse_gru(
+                        self.gru_path,
+                        pre_trigger_ms=self.gru_pre_trigger_ms,
+                    )
             finally:
                 QApplication.restoreOverrideCursor()
             saved = {
@@ -3767,6 +4057,19 @@ class RayPathMainWindow(QMainWindow):
             }
             for record in self.waveform_records:
                 saved_record = saved.get((record.test_number, record.depth_m), {})
+                saved_hit_review = saved_record.get("acquisition_hit_review", [])
+                if record.acquisition_hits and isinstance(saved_hit_review, list):
+                    inclusion_by_key = {
+                        (str(item.get("wave_type")), int(item.get("hit_number"))): bool(
+                            item.get("included", True)
+                        )
+                        for item in saved_hit_review
+                        if isinstance(item, dict) and item.get("hit_number") is not None
+                    }
+                    for hit in record.acquisition_hits:
+                        if hit.key in inclusion_by_key:
+                            hit.included = inclusion_by_key[hit.key]
+                    record.rebuild_acquisition_stacks()
                 saved_record_pre_trigger = saved_record.get("pre_trigger_ms")
                 if saved_record_pre_trigger is not None and not math.isclose(
                     float(saved_record_pre_trigger),
@@ -3837,10 +4140,16 @@ class RayPathMainWindow(QMainWindow):
                         ),
                     )
                 )
-            self.gru_label.setText(
-                f"{self.gru_path.name} — {len(self.waveform_records)} paired seismic records — "
-                f"{self.gru_pre_trigger_ms:g} ms pre-trigger corrected"
-            )
+            if self.waveform_source_format == "scpt_acquisition":
+                self.gru_label.setText(
+                    f"{self.gru_path.name} — {len(self.waveform_records)} paired acquisition shear stacks — "
+                    "trigger-relative source clock"
+                )
+            else:
+                self.gru_label.setText(
+                    f"{self.gru_path.name} — {len(self.waveform_records)} paired seismic records — "
+                    f"{self.gru_pre_trigger_ms:g} ms pre-trigger corrected"
+                )
             if project_version < 4:
                 self._populate_table_from_picks()
             else:
@@ -3856,7 +4165,7 @@ class RayPathMainWindow(QMainWindow):
                 }
                 self._apply_waveform_review_to_input_table()
         elif self.gru_path:
-            self.gru_label.setText(f"GRU source unavailable: {self.gru_path}")
+            self.gru_label.setText(f"Waveform source unavailable: {self.gru_path}")
             self._apply_saved_review_to_input_table()
         else:
             self.gru_label.setText("Project contains manually entered observations")
@@ -3950,7 +4259,7 @@ class RayPathMainWindow(QMainWindow):
                         "TS Method 1 Extended Last-Layer Vs (m/s)",
                         "Experimental Extrapolation Weight Factor",
                         "Experimental Weighted Vs30 (m/s)",
-                        "Applied GRU Pre-Trigger Correction (ms)",
+                        "Applied Source-Clock Correction (ms)",
                         "Arrival-Time Reference",
                         "Application Version",
                         "Project Schema Version",
@@ -4942,6 +5251,8 @@ class RayPathMainWindow(QMainWindow):
             "layer velocities are estimated with bounded L-BFGS-B least squares.</p>"
             f"<p>GRU imports require confirmation of an undocumented pre-trigger correction; the default is "
             f"{GRU_PRE_TRIGGER_MS:g} ms. Recorded and trigger-relative pick times are retained for audit.</p>"
+            "<p>SCPT acquisition soundings import completed baseline-corrected shear-left and shear-right "
+            "direct sums on their existing trigger-relative clock, without normalization or polarity changes.</p>"
             "<p>Automatic waveform markers and QC warnings are review aids. Rejection is always an explicit "
             "analyst decision. Per-arrival one-sigma uncertainty weights the inversion; robust loss flags rather "
             "than silently deletes outliers, and repeatable pick-time ensembles quantify velocity/Vs30 spread.</p>",

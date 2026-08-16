@@ -42,13 +42,16 @@ from .project_io import ProjectDocument, project_schema_version, read_project_fi
 from .rays import forward_model, pseudo_interval_velocities, solve_direct_ray
 from .vs30 import calculate_ts1170_5_method1_vs30, calculate_vs30, ts1170_5_vs30_band
 from .waveforms import (
+    AcquisitionHitRecord,
     GruFormatError,
+    ScptAcquisitionFormatError,
     WaveformQcMetrics,
     WaveformRecord,
     add_suggested_picks,
     calculate_waveform_qc,
     gru_deviation_points,
     parse_gru,
+    parse_scpt_acquisition,
     suggest_pair_crossover,
     suggest_pick_uncertainty_ms,
     suggest_trace_picks,
@@ -56,11 +59,13 @@ from .waveforms import (
 
 __all__ = [name for name in vars(_constants) if name.isupper()]
 __all__ += [
+    "AcquisitionHitRecord",
     "DEPTH_BASIS_LABELS",
     "CorrectedGeometry",
     "CrossCorrelationResult",
     "DeviationPoint",
     "GruFormatError",
+    "ScptAcquisitionFormatError",
     "GeologicalInversionResult",
     "InversionResult",
     "RayPathError",
@@ -91,6 +96,7 @@ __all__ += [
     "invert_velocity_profile",
     "invert_geological_layer_profile",
     "parse_gru",
+    "parse_scpt_acquisition",
     "project_schema_version",
     "pseudo_interval_velocities",
     "select_regularization_lcurve",
