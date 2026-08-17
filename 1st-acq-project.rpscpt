@@ -1,0 +1,742 @@
+{
+  "format": "RayPath SCPT Project",
+  "version": 10,
+  "schema_version": 10,
+  "application_version": "0.8.0-alpha.1",
+  "units": "SI",
+  "waveform_source_format": "scpt_acquisition",
+  "gru_pre_trigger_ms": 0.0,
+  "pick_time_reference": "relative_to_trigger",
+  "timing_audit": {
+    "recorded_clock": "SCPT acquisition time_from_trigger_s",
+    "analysis_clock": "milliseconds relative to physical trigger",
+    "correction": "none; acquisition source clock is already trigger-relative",
+    "pre_trigger_ms": 0.0
+  },
+  "qc_configuration": {
+    "method_version": 1,
+    "snr_warning_db": 10.0,
+    "sign_reversed_correlation_warning": 0.6,
+    "maximum_correlation_lag_ms": 5.0,
+    "peak_disagreement_warning_ms": 2.0,
+    "sample_interval_deviation_warning_pct": 1.0
+  },
+  "source_offset_m": 2.4,
+  "survey_geometry": {
+    "source_offset_uncertainty_m": null,
+    "coordinate_system": "",
+    "vertical_datum": "",
+    "elevations_enabled": false,
+    "source_elevation_m": 0.0,
+    "receiver_reference_elevation_m": 0.0,
+    "receiver_depth_reference": "Borehole/direct-push ground reference",
+    "depth_basis": "along_rods",
+    "source_to_receiver_bearing_deg": null,
+    "source_block_axis_bearing_deg": null,
+    "channel_17_strike_bearing_deg": null,
+    "channel_18_strike_bearing_deg": null,
+    "receiver_orientation_bearing_deg": null,
+    "deviation_points": [
+      {
+        "recorded_depth_m": 0.5,
+        "inclination_deg": 0.0,
+        "azimuth_deg": null
+      },
+      {
+        "recorded_depth_m": 1.0,
+        "inclination_deg": 0.0,
+        "azimuth_deg": null
+      },
+      {
+        "recorded_depth_m": 1.5,
+        "inclination_deg": 0.0,
+        "azimuth_deg": null
+      },
+      {
+        "recorded_depth_m": 2.0,
+        "inclination_deg": 0.0,
+        "azimuth_deg": null
+      },
+      {
+        "recorded_depth_m": 2.5,
+        "inclination_deg": 0.0,
+        "azimuth_deg": null
+      }
+    ],
+    "notes": ""
+  },
+  "geometry_audit": {
+    "recorded_depths_m": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5
+    ],
+    "corrected_vertical_depths_m": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5
+    ],
+    "receiver_offsets_m": [
+      2.4,
+      2.4,
+      2.4,
+      2.4,
+      2.4
+    ],
+    "receiver_east_m": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "receiver_north_m": [
+      2.4,
+      2.4,
+      2.4,
+      2.4,
+      2.4
+    ],
+    "applicability_warnings": [
+      "source-offset measurement uncertainty is not recorded",
+      "coordinate system is not recorded",
+      "source-to-sounding bearing is not recorded",
+      "source-block axis bearing is not recorded",
+      "channel 17/18 strike bearings are incomplete",
+      "receiver orientation bearing is not recorded",
+      "source and receiver-reference elevations are not recorded"
+    ]
+  },
+  "regularization": 0.0,
+  "regularization_mode": "manual",
+  "robust_loss": "linear",
+  "fallback_pick_uncertainty_ms": 0.5,
+  "uncertainty_ensemble_size": 0,
+  "uncertainty_ensemble_classification": "Off",
+  "uncertainty_random_seed": 11705,
+  "vs30_extrapolation_weight_factor": 1.0,
+  "vs30_primary_method": "TS 1170.5:2025 Method 1 \u2014 direct measured Vs",
+  "vs30_extrapolation_weighting_status": "experimental sensitivity only",
+  "arrival_estimator": "crossover",
+  "comparator_settings": {
+    "geological_boundaries_m": [],
+    "boundary_provenance": ""
+  },
+  "vs30_history": [],
+  "waveform_source": "C:\\Users\\SeanTempleton\\OneDrive - McMillan Drilling Ltd\\Documents\\GitHub\\scpt-acq\\captures\\SCPT_SCPT-20260812-1515_20260812",
+  "gru_source": null,
+  "inputs": [
+    {
+      "depth_m": "0.500",
+      "first_peak_ms": "14.867",
+      "crossover_ms": "17.287",
+      "zero_cross_ms": "17.320",
+      "max_peak_ms": "20.048",
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 1.4000000000000004,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation."
+    },
+    {
+      "depth_m": "1.000",
+      "first_peak_ms": "16.130",
+      "crossover_ms": "18.098",
+      "zero_cross_ms": "18.130",
+      "max_peak_ms": "20.968",
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 1.3999999999999995,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation."
+    },
+    {
+      "depth_m": "1.500",
+      "first_peak_ms": "17.227",
+      "crossover_ms": "19.807",
+      "zero_cross_ms": "19.662",
+      "max_peak_ms": "22.791",
+      "review_state": "accepted_with_comment",
+      "review_comment": "horrible offset between channels. Must be geometry effect I guess",
+      "pick_uncertainty_ms": 2.5327006617594545,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation."
+    },
+    {
+      "depth_m": "2.000",
+      "first_peak_ms": "20.219",
+      "crossover_ms": "22.239",
+      "zero_cross_ms": "22.369",
+      "max_peak_ms": "25.213",
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 1.3999999999999995,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation."
+    },
+    {
+      "depth_m": "2.500",
+      "first_peak_ms": "22.263",
+      "crossover_ms": "24.375",
+      "zero_cross_ms": "24.423",
+      "max_peak_ms": "27.520",
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 4.6000000000000005,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation."
+    }
+  ],
+  "picks": [
+    {
+      "test_number": 1,
+      "depth_m": 0.5,
+      "pre_trigger_ms": 0.0,
+      "recorded_time_start_ms": -50.0,
+      "recorded_time_end_ms": 550.4,
+      "trigger_relative_time_start_ms": -50.0,
+      "trigger_relative_time_end_ms": 550.4,
+      "sample_interval_ms": 0.19999999999999574,
+      "picks_ms": {
+        "first_peak_17": 15.858164347100354,
+        "zero_cross_17": 18.19682854758306,
+        "max_peak_17": 20.82782577312611,
+        "first_peak_18": 13.876796066135832,
+        "zero_cross_18": 16.44283039722103,
+        "max_peak_18": 19.26871630613764,
+        "crossover": 17.287348025173124
+      },
+      "picks_trigger_relative_ms": {
+        "first_peak_17": 15.858164347100354,
+        "zero_cross_17": 18.19682854758306,
+        "max_peak_17": 20.82782577312611,
+        "first_peak_18": 13.876796066135832,
+        "zero_cross_18": 16.44283039722103,
+        "max_peak_18": 19.26871630613764,
+        "crossover": 17.287348025173124
+      },
+      "picks_recorded_ms": {
+        "first_peak_17": 15.858164347100354,
+        "zero_cross_17": 18.19682854758306,
+        "max_peak_17": 20.82782577312611,
+        "first_peak_18": 13.876796066135832,
+        "zero_cross_18": 16.44283039722103,
+        "max_peak_18": 19.26871630613764,
+        "crossover": 17.287348025173124
+      },
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 1.4000000000000004,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation.",
+      "qc_metrics": {
+        "sample_interval_ms": 0.19999999999999574,
+        "sample_interval_deviation_pct": 8.171241461241327e-11,
+        "sample_interval_consistent": true,
+        "noise_rms_left": 132.18358445737505,
+        "noise_rms_right": 112.29662506059564,
+        "snr_left_db": 42.02713737617564,
+        "snr_right_db": 41.73151417027553,
+        "sign_reversed_correlation": 0.9865748795054234,
+        "correlation_lag_ms": -1.599999999999966,
+        "polarity_reversed": true,
+        "first_peak_disagreement_ms": 1.9813682809645226,
+        "zero_cross_disagreement_ms": 1.7539981503620297,
+        "max_peak_disagreement_ms": 1.5591094669884704,
+        "clipped_left": false,
+        "clipped_right": false,
+        "constant_left": false,
+        "constant_right": false,
+        "warnings": []
+      }
+    },
+    {
+      "test_number": 2,
+      "depth_m": 1.0,
+      "pre_trigger_ms": 0.0,
+      "recorded_time_start_ms": -50.0,
+      "recorded_time_end_ms": 550.4,
+      "trigger_relative_time_start_ms": -50.0,
+      "trigger_relative_time_end_ms": 550.4,
+      "sample_interval_ms": 0.19999999999999574,
+      "picks_ms": {
+        "first_peak_17": 16.93655258914173,
+        "zero_cross_17": 18.774932807740544,
+        "max_peak_17": 21.645386131517647,
+        "first_peak_18": 15.323938362300659,
+        "zero_cross_18": 17.484841426267693,
+        "max_peak_18": 20.29079018097115,
+        "crossover": 18.097634832467296
+      },
+      "picks_trigger_relative_ms": {
+        "first_peak_17": 16.93655258914173,
+        "zero_cross_17": 18.774932807740544,
+        "max_peak_17": 21.645386131517647,
+        "first_peak_18": 15.323938362300659,
+        "zero_cross_18": 17.484841426267693,
+        "max_peak_18": 20.29079018097115,
+        "crossover": 18.097634832467296
+      },
+      "picks_recorded_ms": {
+        "first_peak_17": 16.93655258914173,
+        "zero_cross_17": 18.774932807740544,
+        "max_peak_17": 21.645386131517647,
+        "first_peak_18": 15.323938362300659,
+        "zero_cross_18": 17.484841426267693,
+        "max_peak_18": 20.29079018097115,
+        "crossover": 18.097634832467296
+      },
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 1.3999999999999995,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation.",
+      "qc_metrics": {
+        "sample_interval_ms": 0.19999999999999574,
+        "sample_interval_deviation_pct": 8.171241461241327e-11,
+        "sample_interval_consistent": true,
+        "noise_rms_left": 108.97432725188075,
+        "noise_rms_right": 108.01201784986705,
+        "snr_left_db": 46.94595983702083,
+        "snr_right_db": 46.078146083527116,
+        "sign_reversed_correlation": 0.9948418548044223,
+        "correlation_lag_ms": -1.599999999999966,
+        "polarity_reversed": true,
+        "first_peak_disagreement_ms": 1.612614226841071,
+        "zero_cross_disagreement_ms": 1.2900913814728519,
+        "max_peak_disagreement_ms": 1.3545959505464964,
+        "clipped_left": false,
+        "clipped_right": false,
+        "constant_left": false,
+        "constant_right": false,
+        "warnings": []
+      }
+    },
+    {
+      "test_number": 3,
+      "depth_m": 1.5,
+      "pre_trigger_ms": 0.0,
+      "recorded_time_start_ms": -50.0,
+      "recorded_time_end_ms": 550.4,
+      "trigger_relative_time_start_ms": -50.0,
+      "trigger_relative_time_end_ms": 550.4,
+      "sample_interval_ms": 0.19999999999999574,
+      "picks_ms": {
+        "first_peak_17": 18.71078659738398,
+        "zero_cross_17": 20.710428238666903,
+        "max_peak_17": 23.51637699337036,
+        "first_peak_18": 15.743576419996415,
+        "zero_cross_18": 18.614029743773514,
+        "max_peak_18": 22.0650241892134,
+        "crossover": 19.807364271635905
+      },
+      "picks_trigger_relative_ms": {
+        "first_peak_17": 18.71078659738398,
+        "zero_cross_17": 20.710428238666903,
+        "max_peak_17": 23.51637699337036,
+        "first_peak_18": 15.743576419996415,
+        "zero_cross_18": 18.614029743773514,
+        "max_peak_18": 22.0650241892134,
+        "crossover": 19.807364271635905
+      },
+      "picks_recorded_ms": {
+        "first_peak_17": 18.71078659738398,
+        "zero_cross_17": 20.710428238666903,
+        "max_peak_17": 23.51637699337036,
+        "first_peak_18": 15.743576419996415,
+        "zero_cross_18": 18.614029743773514,
+        "max_peak_18": 22.0650241892134,
+        "crossover": 19.807364271635905
+      },
+      "review_state": "accepted_with_comment",
+      "review_comment": "horrible offset between channels. Must be geometry effect I guess",
+      "pick_uncertainty_ms": 2.5327006617594545,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation.",
+      "qc_metrics": {
+        "sample_interval_ms": 0.19999999999999574,
+        "sample_interval_deviation_pct": 8.171241461241327e-11,
+        "sample_interval_consistent": true,
+        "noise_rms_left": 55.63475532434739,
+        "noise_rms_right": 57.58569266753679,
+        "snr_left_db": 52.79357711775905,
+        "snr_right_db": 48.13709990615579,
+        "sign_reversed_correlation": 0.9549094310374052,
+        "correlation_lag_ms": -1.599999999999966,
+        "polarity_reversed": true,
+        "first_peak_disagreement_ms": 2.967210177387564,
+        "zero_cross_disagreement_ms": 2.096398494893389,
+        "max_peak_disagreement_ms": 1.4513528041569614,
+        "clipped_left": false,
+        "clipped_right": false,
+        "constant_left": false,
+        "constant_right": false,
+        "warnings": [
+          "first peak/trough disagreement exceeds 2 ms",
+          "experimental zero-cross disagreement exceeds 2 ms"
+        ]
+      }
+    },
+    {
+      "test_number": 4,
+      "depth_m": 2.0,
+      "pre_trigger_ms": 0.0,
+      "recorded_time_start_ms": -50.0,
+      "recorded_time_end_ms": 550.4,
+      "trigger_relative_time_start_ms": -50.0,
+      "trigger_relative_time_end_ms": 550.4,
+      "sample_interval_ms": 0.19999999999999574,
+      "picks_ms": {
+        "first_peak_17": 21.01102893780983,
+        "zero_cross_17": 23.14424920485803,
+        "max_peak_17": 25.89136760426771,
+        "first_peak_18": 19.427558869509852,
+        "zero_cross_18": 21.592935285227608,
+        "max_peak_18": 24.53396792457086,
+        "crossover": 22.23931608067487
+      },
+      "picks_trigger_relative_ms": {
+        "first_peak_17": 21.01102893780983,
+        "zero_cross_17": 23.14424920485803,
+        "max_peak_17": 25.89136760426771,
+        "first_peak_18": 19.427558869509852,
+        "zero_cross_18": 21.592935285227608,
+        "max_peak_18": 24.53396792457086,
+        "crossover": 22.23931608067487
+      },
+      "picks_recorded_ms": {
+        "first_peak_17": 21.01102893780983,
+        "zero_cross_17": 23.14424920485803,
+        "max_peak_17": 25.89136760426771,
+        "first_peak_18": 19.427558869509852,
+        "zero_cross_18": 21.592935285227608,
+        "max_peak_18": 24.53396792457086,
+        "crossover": 22.23931608067487
+      },
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 1.3999999999999995,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation.",
+      "qc_metrics": {
+        "sample_interval_ms": 0.19999999999999574,
+        "sample_interval_deviation_pct": 8.171241461241327e-11,
+        "sample_interval_consistent": true,
+        "noise_rms_left": 61.42572750891926,
+        "noise_rms_right": 87.9523052568834,
+        "snr_left_db": 44.99824196522731,
+        "snr_right_db": 41.57351569889545,
+        "sign_reversed_correlation": 0.9972717792039126,
+        "correlation_lag_ms": -1.7999999999999616,
+        "polarity_reversed": true,
+        "first_peak_disagreement_ms": 1.5834700682999774,
+        "zero_cross_disagreement_ms": 1.5513139196304238,
+        "max_peak_disagreement_ms": 1.3573996796968508,
+        "clipped_left": false,
+        "clipped_right": false,
+        "constant_left": false,
+        "constant_right": false,
+        "warnings": []
+      }
+    },
+    {
+      "test_number": 5,
+      "depth_m": 2.5,
+      "pre_trigger_ms": 0.0,
+      "recorded_time_start_ms": -50.0,
+      "recorded_time_end_ms": 550.4,
+      "trigger_relative_time_start_ms": -50.0,
+      "trigger_relative_time_end_ms": 550.4,
+      "sample_interval_ms": 0.19999999999999574,
+      "picks_ms": {
+        "first_peak_17": 22.891506898405304,
+        "zero_cross_17": 24.98790539329869,
+        "max_peak_17": 28.019620139759898,
+        "first_peak_18": 21.63366780146927,
+        "zero_cross_18": 23.859075434509943,
+        "max_peak_18": 27.019799319118437,
+        "crossover": 24.375111987099086
+      },
+      "picks_trigger_relative_ms": {
+        "first_peak_17": 22.891506898405304,
+        "zero_cross_17": 24.98790539329869,
+        "max_peak_17": 28.019620139759898,
+        "first_peak_18": 21.63366780146927,
+        "zero_cross_18": 23.859075434509943,
+        "max_peak_18": 27.019799319118437,
+        "crossover": 24.375111987099086
+      },
+      "picks_recorded_ms": {
+        "first_peak_17": 22.891506898405304,
+        "zero_cross_17": 24.98790539329869,
+        "max_peak_17": 28.019620139759898,
+        "first_peak_18": 21.63366780146927,
+        "zero_cross_18": 23.859075434509943,
+        "max_peak_18": 27.019799319118437,
+        "crossover": 24.375111987099086
+      },
+      "review_state": "accepted",
+      "review_comment": "",
+      "pick_uncertainty_ms": 4.6000000000000005,
+      "pick_uncertainty_source": "automatic_qc_default",
+      "pick_uncertainty_basis": "Automatic QC suggestion controlled by half the maximum opposing-trace pick disagreement; interpreted as one standard deviation.",
+      "qc_metrics": {
+        "sample_interval_ms": 0.19999999999999574,
+        "sample_interval_deviation_pct": 8.171241461241327e-11,
+        "sample_interval_consistent": true,
+        "noise_rms_left": 67.5135690065338,
+        "noise_rms_right": 89.73251361686019,
+        "snr_left_db": 44.60988143237044,
+        "snr_right_db": 42.980066879102104,
+        "sign_reversed_correlation": 0.9911621456654803,
+        "correlation_lag_ms": -0.9999999999999787,
+        "polarity_reversed": true,
+        "first_peak_disagreement_ms": 1.257839096936035,
+        "zero_cross_disagreement_ms": 1.1288299587887458,
+        "max_peak_disagreement_ms": 0.9998208206414603,
+        "clipped_left": false,
+        "clipped_right": false,
+        "constant_left": false,
+        "constant_right": false,
+        "warnings": []
+      }
+    }
+  ],
+  "last_result": {
+    "corrected_vertical_depths_m": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5
+    ],
+    "receiver_offsets_m": [
+      2.4,
+      2.4,
+      2.4,
+      2.4,
+      2.4
+    ],
+    "velocities_mps": [
+      141.81351014945014,
+      145.42634972211658,
+      141.4050283192977,
+      133.43805410754928,
+      149.34119601492705
+    ],
+    "calculated_times_ms": [
+      17.286999890509108,
+      18.09800005514576,
+      19.8069999514036,
+      22.238999923357046,
+      24.37500056361332
+    ],
+    "rmse_ms": 2.6112259051234177e-07,
+    "weighted_rmse_ms": 1.2256624449763138e-07,
+    "data_cost_ms2": 1.5022484290253153e-14,
+    "regularization_contribution": 0.0,
+    "roughness_norm": 2.615141316320702,
+    "objective_value": 1.5022484290253153e-14,
+    "robust_loss": "linear",
+    "observation_std_ms": [
+      1.4000000000000004,
+      1.3999999999999995,
+      2.5327006617594545,
+      1.3999999999999995,
+      4.6000000000000005
+    ],
+    "standardized_residuals": [
+      -7.820778003383589e-08,
+      3.938982820472782e-08,
+      -1.9187580464200066e-08,
+      -5.4744968479093986e-08,
+      1.225246346108597e-07
+    ],
+    "resolution_diagonal": [
+      0.9999999999995748,
+      0.9999999999982745,
+      0.9999999999885725,
+      0.9999999999854899,
+      0.9999999999374373
+    ],
+    "observation_leverage": [
+      0.999999999,
+      0.999999999,
+      0.999999999,
+      0.999999999,
+      0.999999999
+    ],
+    "influence_scores": [
+      0.0024731471552870447,
+      0.0012456157370740034,
+      0.0006067645702428486,
+      0.001731187907415016,
+      0.0038745691465648653
+    ],
+    "outlier_flags": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "influential_flags": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "bound_active_flags": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "diagnostic_warnings": [],
+    "vs30_mps": null,
+    "vs30_method": null,
+    "vs30_raw_mps": null,
+    "vs30_lower_bound_mps": null,
+    "vs30_upper_bound_mps": null,
+    "vs30_indicative_bands": [],
+    "vs30_extrapolated_velocity_mps": null,
+    "geometry_applicability_warnings": [
+      "source-offset measurement uncertainty is not recorded",
+      "coordinate system is not recorded",
+      "source-to-sounding bearing is not recorded",
+      "source-block axis bearing is not recorded",
+      "channel 17/18 strike bearings are incomplete",
+      "receiver orientation bearing is not recorded",
+      "source and receiver-reference elevations are not recorded"
+    ],
+    "comparators": {
+      "arrival_pick_kind": "crossover",
+      "geological_boundaries_m": [],
+      "boundary_provenance": "",
+      "unavailable_reasons": {
+        "slope_vs30": "The directly measured Vs profile reaches 2.50 m; TS 1170.5:2025 Method 1 requires direct field measurement to at least 25.00 m.",
+        "geological_vs30": "The directly measured Vs profile reaches 2.50 m; TS 1170.5:2025 Method 1 requires direct field measurement to at least 25.00 m.",
+        "cross_correlation_vs30": "The directly measured Vs profile reaches 2.50 m; TS 1170.5:2025 Method 1 requires direct field measurement to at least 25.00 m."
+      },
+      "slope_method": {
+        "method": "straight-ray cosine-corrected vertical time; independent linear segments",
+        "corrected_times_ms": [
+          3.5257571908341623,
+          6.96076923076923,
+          10.497689004642986,
+          14.23706086413837,
+          17.583815950129445
+        ],
+        "calculated_times_ms": [
+          3.482536617710894,
+          7.021777532906865,
+          10.561018448102834,
+          14.100259363298804,
+          17.639500278494776
+        ],
+        "rmse_ms": 0.07926669456614177,
+        "layers": [
+          {
+            "top_depth_m": 0.0,
+            "bottom_depth_m": 2.5,
+            "velocity_mps": 141.27323117598922,
+            "slope_s_per_m": 0.00707848183039194,
+            "intercept_s": -5.670429748507613e-05,
+            "rmse_ms": 0.07926669456614177
+          }
+        ]
+      },
+      "geological_raypath": {
+        "layer_tops_m": [
+          0.0
+        ],
+        "layer_bottoms_m": [
+          2.5
+        ],
+        "velocities_mps": [
+          142.0978385351664
+        ],
+        "calculated_times_ms": [
+          17.2524097459762,
+          18.297252279150978,
+          19.91722301192192,
+          21.98555518203236,
+          24.388440569960522
+        ],
+        "rmse_ms": 0.1532723024247656,
+        "success": true,
+        "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+        "bound_active_flags": [
+          false
+        ],
+        "warnings": []
+      },
+      "successive_depth_cross_correlation": {
+        "intervals": [
+          {
+            "from_depth_m": 0.5,
+            "to_depth_m": 1.0,
+            "left_lag_ms": 0.799999999999983,
+            "right_lag_ms": 0.9999999999999787,
+            "mean_lag_ms": 0.8999999999999808,
+            "left_correlation": 0.7737284492541548,
+            "right_correlation": 0.7458587062349824
+          },
+          {
+            "from_depth_m": 1.0,
+            "to_depth_m": 1.5,
+            "left_lag_ms": 1.9999999999999574,
+            "right_lag_ms": 1.9999999999999574,
+            "mean_lag_ms": 1.9999999999999574,
+            "left_correlation": 0.8497068549636226,
+            "right_correlation": 0.7699117663092785
+          },
+          {
+            "from_depth_m": 1.5,
+            "to_depth_m": 2.0,
+            "left_lag_ms": 2.5999999999999446,
+            "right_lag_ms": 2.399999999999949,
+            "mean_lag_ms": 2.4999999999999467,
+            "left_correlation": 0.9239239969543902,
+            "right_correlation": 0.8898869889785103
+          },
+          {
+            "from_depth_m": 2.0,
+            "to_depth_m": 2.5,
+            "left_lag_ms": 1.7999999999999616,
+            "right_lag_ms": 2.7999999999999403,
+            "mean_lag_ms": 2.299999999999951,
+            "left_correlation": 0.9786719014272746,
+            "right_correlation": 0.9719807159602315
+          }
+        ],
+        "arrival_times_ms": [
+          17.287,
+          18.18699999999998,
+          20.186999999999937,
+          22.686999999999884,
+          24.986999999999835
+        ],
+        "velocities_mps": [
+          141.81350925982792,
+          144.07158648933435,
+          134.63209252628306,
+          130.54945193852825,
+          142.9667107652447
+        ],
+        "rmse_ms": 6.8869462019227624e-09
+      },
+      "vs30": {
+        "slope": null,
+        "geological": null,
+        "cross_correlation": null
+      }
+    }
+  }
+}
