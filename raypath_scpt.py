@@ -393,6 +393,10 @@ class SurveyGeometryDialog(QDialog):
         self.vertical_datum_edit.setPlaceholderText("e.g. NZVD2016 / local project datum")
         setup_form.addRow("Vertical datum", self.vertical_datum_edit)
         self.elevations_checkbox = QCheckBox("Apply source and receiver-reference elevations")
+        self.elevations_checkbox.setToolTip(
+            "Controls whether the entered elevations are used to correct receiver depths. "
+            "Elevation values can be entered and retained while this is unchecked."
+        )
         self.elevations_checkbox.setChecked(geometry.elevations_enabled)
         setup_form.addRow("Elevation correction", self.elevations_checkbox)
         self.source_elevation_spin = QDoubleSpinBox()
@@ -518,10 +522,11 @@ class SurveyGeometryDialog(QDialog):
     def _optional_bearing(spin: QDoubleSpinBox) -> float | None:
         return None if spin.value() < 0.0 else float(spin.value())
 
-    def _elevation_controls_changed(self, enabled: bool) -> None:
-        self.source_elevation_spin.setEnabled(enabled)
-        self.reference_elevation_spin.setEnabled(enabled)
-        self.vertical_datum_edit.setEnabled(enabled)
+    def _elevation_controls_changed(self, _enabled: bool) -> None:
+        # Keep the survey metadata editable independently of whether the
+        # correction is currently applied.  Disabling these controls when the
+        # checkbox was clear prevented users from entering the values needed
+        # before enabling the correction.
         self._update_preview()
 
     def _set_all_vertical(self) -> None:

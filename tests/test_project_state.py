@@ -550,6 +550,26 @@ class ProjectStateTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_geometry_elevations_remain_editable_when_correction_is_disabled(self) -> None:
+        dialog = SurveyGeometryDialog(SurveyGeometry(), [2.0, 4.0], 2.4)
+        try:
+            self.assertFalse(dialog.elevations_checkbox.isChecked())
+            self.assertTrue(dialog.source_elevation_spin.isEnabled())
+            self.assertTrue(dialog.reference_elevation_spin.isEnabled())
+            self.assertTrue(dialog.vertical_datum_edit.isEnabled())
+
+            dialog.source_elevation_spin.setValue(12.5)
+            dialog.reference_elevation_spin.setValue(11.75)
+            dialog.vertical_datum_edit.setText("NZVD2016")
+
+            geometry = dialog._geometry_from_controls()
+            self.assertFalse(geometry.elevations_enabled)
+            self.assertAlmostEqual(geometry.source_elevation_m, 12.5)
+            self.assertAlmostEqual(geometry.receiver_reference_elevation_m, 11.75)
+            self.assertEqual(geometry.vertical_datum, "NZVD2016")
+        finally:
+            dialog.close()
+
     def test_rejected_waveform_depth_is_omitted_from_inversion_input(self) -> None:
         window = RayPathMainWindow()
         try:
